@@ -67,7 +67,24 @@ other commodities, procurement, enterprise integrations, multi-user administrati
 ```
 
 `tariff_engine` must never import `tariff_app`, SQLAlchemy, FastAPI, pdfplumber, anthropic, `datetime.now`,
-`date.today`, `random`, `uuid`, `time`, or use `float`. An engine test enforces this by AST inspection.
+`date.today`, `random`, `uuid`, `time`, or use `float`. An engine test (`tests/engine/test_purity.py`) enforces
+this by AST inspection of every module in the package. Imports are an **allowlist** of top-level modules:
+stdlib `__future__, abc, ast, bisect, calendar, collections, contextlib, dataclasses, datetime (date/timedelta),
+decimal, enum, functools, graphlib, hashlib, heapq, itertools, json, operator, re, types, typing`, plus
+`pydantic`, `pydantic_core` (pydantic's exactly-pinned core, for `PydanticCustomError`) and the package itself
+(absolute or relative). Everything else fails — app/DB/web/document/AI libraries, clock/randomness (`time,
+random, secrets, uuid, zoneinfo`), I/O/process/environment (`os, sys, io, pathlib, codecs, pickle, socket,
+http, urllib, subprocess, threading, asyncio, sqlite3, logging, importlib`, C backends such as `posix`/`_io`, …)
+and float math (`math, cmath, statistics`). Widening the allowlist is a contract change to this paragraph. The
+scan also rejects float/complex literals; the names `float, complex, open, print, input, eval, exec, compile,
+__import__, breakpoint` and the dynamic-access names `getattr, setattr, delattr, globals, locals, vars,
+__builtins__`; the attributes `.now/.utcnow/.today/.fromtimestamp/.utcfromtimestamp/.timestamp/.from_float/
+.create_decimal_from_float/.__float__/.__complex__/.literal_eval/.__globals__/.__builtins__` (also when imported
+by name, e.g. `from ast import literal_eval`); and `json.load`/`json.loads` without `parse_float=Decimal` (JSON
+numbers would become floats; `from json import load(s)` is rejected so the check applies). The scan is static and
+best-effort: int true division (`1 / 2` is a float) and floats produced at runtime by allowlisted code are
+review concerns it cannot see, so engine `/` operands must be Decimals or Quantities. Engine errors derive from
+`tariff_engine.errors.EngineError` (`CalcError`, `UnitError`, `DateError`).
 
 ---
 
@@ -118,20 +135,58 @@ other commodities, procurement, enterprise integrations, multi-user administrati
 - Version effective intervals are **half-open** `[effective_from, effective_to)`.
 - Month arithmetic helpers: `month_add("2026-07", -11) == "2025-08"`, `months_between`, `month_days`.
 - Comparison month `M`: `period_start` = first day, `period_end` = last day, `billing_days` = calendar days.
+- API (S01): `DayCountConvention{inclusive, read_to_read}`; `billing_days(start, end, convention)`;
+  `resolve_billing_days(start, end, convention, reported)` (reported wins; must be a whole number ≥ 1; `None` =
+  not reported; an unknown convention raises `DateError` whether or not a count is reported). A period ending
+  before it starts, or yielding 0 billing days (`read_to_read` with start = end), raises `DateError` — billing
+  days is a proration denominator. Months are strict `"YYYY-MM"` (ASCII digits, years 0001–9999): the
+  JSON-schema `MONTH_PATTERN` (no look-arounds) accepts exactly what the parser accepts, and the parser validates
+  with it. Helpers: `parse_month`, `format_month`, `is_month`, `month_add`,
+  `months_between(a, b) = b − a` (signed, so `month_add(a, months_between(a, b)) == b`), `month_range(first,
+  last)` (inclusive, ascending, empty if first > last), `month_days`, `month_of(date)`, `month_bounds(M)`.
+  Half-open helpers: `in_effective_interval(day, from, to|None)` and `interval_intersects_period(from, to|None,
+  period_start, period_end)` (true iff ≥1 inclusive service day lies in `[from, to)`); an empty/reversed
+  interval (`to ≤ from`) raises `DateError`. Every day argument must be a `datetime.date` that is **not** a
+  `datetime` (else `TypeError`): a datetime would count 24-hour spans instead of calendar service dates. A
+  reported `billing_days` must lie in `1..MAX_BILLING_DAYS` (3,652,059 = the days in years 0001–9999), checked
+  before any integer conversion, else `DateError`.
 
 ### 4.1 Decimals, canonical forms (`decimals.py`)
-- `D(x: str | int | Decimal) -> Decimal`; raises `TypeError` for `float`/`bool`.
-- `engine_context()`: `localcontext` with `prec=34`, `rounding=ROUND_HALF_EVEN`, traps `InvalidOperation`,
-  `DivisionByZero`, `Overflow`. All engine arithmetic runs inside it.
+- **Engine range** (S01): every engine decimal is a finite value the engine context can hold exactly —
+  `adjusted() ≤ ENGINE_EMAX = 6144` (at most 6145 integer digits) and exponent `≥ ENGINE_ETINY = −6176` (at most
+  6176 decimal places), the IEEE 754 decimal128 range. `in_engine_range(d)` tests it. Arithmetic results are in
+  range by construction (overflow/underflow trap); `D()`, `DecimalStr` and `canonical_str` refuse anything
+  outside it, so a short text such as `"1E+99999999999"` can never become a gigabyte-long plain string.
+- `D(x: str | int | Decimal) -> Decimal`; raises `TypeError` for `float`/`bool` (and any other type),
+  `ValueError` for text outside the ASCII grammar `[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?` (no
+  whitespace, underscores, non-ASCII digits or NaN/Infinity spellings), non-finite Decimals and values outside
+  the engine range. A coefficient longer than 34 digits is kept exactly (only arithmetic rounds to 34 digits).
+- `engine_context()`: `localcontext` with `prec=34`, `rounding=ROUND_HALF_EVEN`, `Emax=6144`, `Emin=−6143`
+  (decimal128), `clamp=0`, traps `InvalidOperation`, `DivisionByZero`, `Overflow`, **`Underflow`** (a tiny
+  result is never silently rounded toward zero) **and `FloatOperation`** (any implicit float/Decimal mixing
+  raises); every field explicit, fresh context per call. All engine arithmetic runs inside it.
 - `RoundingMode` enum `HALF_UP, HALF_EVEN, DOWN, UP, CEILING, FLOOR`; `quantize(value, places, mode)`.
   Rounding quantizes the **canonical-unit magnitude** (USD, kW, kW·h, h, dimensionless): `places=5` on a
-  `USD/kWh` rate means 0.001 cents.
-- `canonical_str(d)`: `format(d, "f")`, never exponent notation, `-0` rendered as `0` at the same scale.
-- `DecimalStr = Annotated[Decimal, BeforeValidator(accept str|int, reject float/bool → "decimal_must_be_string"),
+  `USD/kWh` rate means 0.001 cents. `places` may be negative (tens, hundreds); a zero result is never `-0`
+  (`-0.004` → `0.00`); a non-finite value, a result beyond 34 digits or `places` outside `−6144..6176` (checked
+  before any conversion) raises `CalcError`.
+- `canonical_str(d)`: `format(d, "f")`, never exponent notation, `-0` rendered as `0` at the same scale; a value
+  outside the engine range raises `ValueError`.
+- `DecimalStr = Annotated[Decimal, BeforeValidator(accept a plain decimal str or a finite Decimal instance;
+  reject every JSON/Python number — int included — bool and null → "decimal_must_be_string"),
   PlainSerializer(canonical_str, return_type=str, when_used="json"), WithJsonSchema({"type":"string",
-  "pattern":"^-?\\d+(\\.\\d+)?$"})]`. Every engine model and API model uses `DecimalStr`.
+  "pattern":"^-?\\d+(\\.\\d+)?$"})]`. Every engine model and API model uses `DecimalStr`. Strings must fully
+  match `-?[0-9]+(\.[0-9]+)?` (ASCII digits; no exponent, `+`, whitespace or thousands separators) else
+  `decimal_invalid_format`; a NaN/Infinity Decimal → `decimal_not_finite`; a string or Decimal outside the engine
+  range → `decimal_out_of_range`. *(S01: ints are rejected too, because FastAPI validates `json.loads` output in
+  python mode, so accepting `int` would let JSON integers through and break §3.1.)* Optional fields are
+  `DecimalStr | None`; `null` stays `None`, never `0`.
 - `canonical_json(obj) = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)` over
-  `model_dump(mode="json")` output; the **only** input to fingerprints/content hashes (sha256).
+  `model_dump(mode="json")` output; the **only** input to fingerprints/content hashes (sha256). It accepts a
+  Pydantic model (dumped in JSON mode) or JSON-native data (`None`/bool/int/str/list/tuple/dict with str keys)
+  and raises `TypeError` for anything else, including floats, raw Decimals and dates; text (values or keys)
+  that is not valid Unicode (a lone surrogate, e.g. from JSON `"\ud800"`) raises `ValueError`.
+  `canonical_sha256(obj)` = hex sha256 of its UTF-8 bytes.
 
 ### 4.2 Units (`units.py`)
 Dimensional algebra over base symbols `USD, kW, kVAR, kVA, h, day, kV`. A `Unit` is an immutable canonical
@@ -142,16 +197,47 @@ mapping symbol→exponent; dimensionless is `Unit({})`.
   Compound with `/` and `*` (`USD/kWh`, `cents/kWh`, `USD/kW`, `USD/kVAR`, `USD/day`, `kWh/kW`).
 - `parse_unit(text) -> (Unit, scale)`; `Quantity(value, unit, label)` normalizes to canonical scale on
   construction from a unit string (`6.912 cents/kWh` → `0.06912 USD/kWh`) and keeps `label` for display/trace.
+  Every scale is an exact power of ten, so normalization is **exact** — all digits of the entered value are
+  kept whatever the unit (a 37-digit value in `cents` is not rounded to 34) — and a normalized value outside the
+  engine range (§4.1) is a `CalcError` (never a silent zero). `label_value` (value ÷ label scale) is exact too.
 - `+ − min max` and comparisons need identical units → `UnitError` naming both. **Exception:** the literal `0`
   is unit-polymorphic in `+ − min max` and comparisons. `* /` combine units; divide by zero → `CalcError`.
 - Reactive/apparent power are distinct dimensions. Explicit conversions only via functions (§4.3):
   `power_factor(p, q)`, `apparent(p, q)`, `as_reactive_equiv(x_kW)`.
 - A charge/credit component's unit must be `USD`; a determinant's must equal its `output_unit`.
+- Unit-text grammar (S01): aliases are **case-sensitive** (`kw`, `KWH` are unknown → `UnitError`); whitespace is
+  ignored; `*` (or `·`) and `/` are left-associative (`USD/kW/h` = `USD/(kW·h)`); parentheses group; `^n` takes a
+  non-zero integer exponent with |n| ≤ 9 (`kW^2`, `h^-1`); the numeral `1` is dimensionless (`1/h`); text is at
+  most 100 characters. Scales combine exactly (`USD/MWh` → 0.001, `cents/%` → 1); an inexact, overflowing or
+  underflowing scale is a `UnitError`, so a scale is never rounded or zero.
+- Exponent bound (`MAX_UNIT_EXPONENT = 9`), one rule everywhere: every `Unit` keeps each base exponent in
+  `−9..9` — constructing one outside it, directly or via `*`, `/`, `power` (so also `Quantity * /`), raises
+  `UnitError` (e.g. a tenth `kW` factor on `kW^9`). In unit text the *effective* exponent of each name (the
+  product of the `^n` applied to it through parentheses) is bounded too, so nesting cannot multiply the limit:
+  `(kW^3)^3` = `kW^9`; `(kW^3)^4`, `kW^9*kW^9`, `((MW/kW)^9)^9` are `UnitError`. Hence `str(Unit)` — a
+  deterministic display in base order `USD, kW, kVAR, kVA, kV, h, day` — always parses back with scale 1
+  (`USD/kWh`, `kWh`, `kVARh`, `USD/(kW*kVAR)`, `kW^2`, `1/h`, `1` for dimensionless), and displaying a
+  `Quantity` never fails: every value is in the engine range, and if the label re-expression would leave it (a
+  value at the range edge shown in a smaller unit) the canonical value and `str(unit)` are shown instead.
+- `Quantity` (immutable): `value` (canonical scale), `unit`, `label` (the unit text it was entered in; must parse to
+  the same `Unit`; results of `+ − * /` use `str(unit)`, while unary `−`, `abs`, `quantize` and `qmin/qmax` keep
+  the label of their (winning) operand, so `−(6.912 cents/kWh)` displays in cents; a zero literal adopting a unit
+  gets `str(unit)`), `label_value` (value re-expressed in `label` units, e.g.
+  `6.912` for `cents/kWh`), `is_zero_literal`. The polymorphic zero is `Quantity.zero_literal()` (S02 builds it
+  for a literal `0`); it stays polymorphic only through unary `-`, `abs` and `+ − min max` with other zero
+  literals — a computed zero (`x − x`, `0 * x`) has a definite unit, and rounding a zero literal
+  (`Quantity.quantize`, S02 `round_to`) yields a plain dimensionless zero. Unit-checked operations: `+ −`,
+  `qmin/qmax(...)` (ties keep the first operand), `< <= > >=` and `compare(a, b) → −1/0/1` (expression `==`/`!=`
+  must use `compare`). Python `==`/`hash` are structural (value, unit, zero-literal flag; label ignored) and never
+  raise. Mixing a `Quantity` with a raw number is a `TypeError`; arithmetic failures (÷0, overflow, underflow)
+  → `CalcError`.
 
 ### 4.3 Expression language (`expressions.py`)
 Safe formulas parsed with `ast.parse(mode="eval")` and a strict node whitelist. **Never `eval`.**
 - Numbers: literal **source text** → `Decimal(text)` (never the float value of `ast.Constant`). Literals are
-  dimensionless (except unit-polymorphic `0`); units via `q("200", "h")` or `q(200, "h")`.
+  dimensionless (except unit-polymorphic `0`); units via `q("200", "h")` or `q(200, "h")`. Use `D()` (§4.1) for
+  the conversion: it bounds the magnitude to the engine range and refuses `_` digit separators, so the parser
+  must strip or reject those itself.
 - Names: built-ins (`billing_month` int, `billing_days` [day], `days_in_billing_month` [day], `period_year` int),
   then names resolved by the package resolver (§4.6). Dotted names are not allowed.
 - Operators: `+ - * /`, unary `-`, comparisons (chains OK), `and or not`, `a if cond else b`.
