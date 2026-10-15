@@ -77,6 +77,7 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
+norecursedirs = ["_probes", ".*", "__pycache__"]
 markers = [
     "req(*ids): links a test to requirement/acceptance IDs in docs/requirements.yaml",
     "slow: slower integration tests",

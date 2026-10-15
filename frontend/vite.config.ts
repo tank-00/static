@@ -15,7 +15,8 @@ export default defineConfig({
     globals: false,
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
-    exclude: ['src/__probes__/**', 'node_modules/**', 'e2e/**'],
+    // Adversarial probe tests run only with PROBES=1 (see CLAUDE.md).
+    exclude: process.env.PROBES ? ['node_modules/**', 'e2e/**'] : ['src/__probes__/**', 'node_modules/**', 'e2e/**'],
     css: false,
   },
 })

@@ -23,7 +23,7 @@ Read before changing code:
 7. Keep the PRD's separations: coverage vs check scope vs review status vs findings; tolerance vs investigation threshold; reported vs derived; measured vs billed vs contract demand; research candidates vs confirmed facilities.
 8. Synthetic data is always flagged `is_synthetic` and visibly labeled "SYNTHETIC".
 9. Every behavior ships with tests in the same change. Tag backend tests with `@pytest.mark.req("R06", "AT-THRESHOLD")` using IDs from `docs/requirements.yaml`.
-10. Scratch/probe tests go in `backend/tests/_probes/` or `frontend/src/__probes__/` (gitignored).
+10. Scratch/probe tests go in `backend/tests/_probes/` or `frontend/src/__probes__/` (gitignored, excluded from `make check`). Run them explicitly: `uv --directory backend run pytest tests/_probes -q` / `cd frontend && PROBES=1 npx vitest run src/__probes__`.
 
 ## Conventions
 - Python 3.13, typed everywhere (mypy strict for `tariff_engine`), ruff line length 100, `from __future__ import annotations`.
