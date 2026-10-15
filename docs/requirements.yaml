@@ -1,0 +1,66 @@
+# Requirement / acceptance IDs used by `@pytest.mark.req(...)` (backend) and `// req:` tags (frontend/E2E).
+# S24 adds a meta-test asserting every ID below is covered by at least one test and generates
+# docs/TRACEABILITY.md. IDs are stable; add new ones rather than renaming.
+
+requirements:
+  R01: Facility and account workspace (~20 facilities, accounts, candidates require confirmation, ambiguous invoice assignment, configuration vs calculation coverage)
+  R02: Upload, extract and confirm (PDF/CSV/XLSX, originals preserved, source-linked values, corrections with provenance, unreadable pages, duplicates/revisions, demand types)
+  R03: Structured tariff rules with evidence (components, exact source passage, entity/territory/status, riders and amendments as dependencies, inventory and engine support)
+  R04: Approval and version control (approval with timestamp/reason, stale drafts, reproducible completed analyses, reruns preserve prior, account enablement)
+  R05: Reproducible calculation (deterministic arithmetic, units, precision/rounding, reported vs derived, partial/blocked, tolerances pending when unset)
+  R06: Line-level and total reconciliation (mappings incl. one-to-many, signed difference, percentage rule, full total only when complete, balance bridge, offsets visible)
+  R07: Investigation thresholds (default 1%, editable, both directions, exactly 1% within, zero cases, new assessment version on reevaluation)
+  R08: Explanation and review decision (evidence-linked explanations with status, no unsupported causal claims, decision and notes, tolerance vs materiality separate)
+  R09: Finding lifecycle and follow-up (states, amount/account/period/evidence/notes/next action, distinct discrepancy/confirmed error/credit, credit links document + finding)
+  R10: Evidence export (CSV + printable report with IDs, versions, scope, coverage, values, settings, assumptions, sources, decision, findings; numbers match; versioned)
+  R11: Candidate set and operating scenario (eligibility status/evidence, grandfathering separate, baseline and edited scenarios, closed-to-new requires documented eligibility)
+  R12: Comparable cost and conditions (same scenario, components, baseline diff, commitments, unmodeled conditions, rank only eligible + fully modeled, cheapest label names scenario/horizon/set, determinant compatibility, scenario estimate label)
+
+screens_and_states:
+  REVIEW-SCREEN: Main review screen answers the five PRD §5 questions
+  REVIEW-STATES: Draft -> Ready for review -> Reviewed; partial requires acknowledgment; source changes new draft; threshold changes new assessment; findings independent
+  PORTFOLIO-QUEUE: Portfolio queue filters (facility, utility, period, coverage, review state, threshold flag), awaiting-setup accounts, research candidates separate (PRD §7)
+  PROC-SEQUENCE: Processing sequence (§7) - stale drafts, immutable completed runs, settings-only changes reuse amounts, safe retries avoid duplicates
+  ANNUAL-SCENARIO: Annual scenarios require 12 monthly input sets or approved forecast; single-month reuse requires visible approval (§6)
+
+acceptance_matrix:  # PRD §8 "Required acceptance-test matrix"
+  AT-REFERENCE: Reference calculation within configured tolerances; arithmetic and rounding tests pass
+  AT-THRESHOLD: Expected $100,000 - billed $101,000 at 1% (not flagged), $101,001 flagged, $98,999 flagged; signed differences preserved
+  AT-ZERO-MISSING: Expected zero/billed nonzero requires review; missing expected is partial, distinct from zero; empty required fields unresolved
+  AT-MISSING-RIDER-HISTORY: Identify specific missing source or historical determinant; only supported subtotals until resolved
+  AT-DATES-APPLICABILITY: Source effective for account and period; cross-version bills need approved allocation rule; wrong utility/territory blocks use
+  AT-QUANTITY-PROVENANCE: Invoice-based checks keep unverified-usage label; billed demand alone leaves demand determination unchecked; manual assumptions visible
+  AT-VERSIONING-EXPORTS: Corrections create new versions; historical reports reproducible; exported figures, limitations and settings match saved analysis
+  AT-COMPARISON-OFFSETS: Unresolved candidates excluded from ranking; missing TOU quantities explicit; opposite line differences visible despite zero net
+  AT-PORTFOLIO-SETTINGS: One user reviews 20 facilities and six candidates; editing threshold/tolerance preserves previous assessment versions
+
+reference_cases:  # PRD §8 "Additional reference cases"
+  RC-SEASONAL-DEMAND: Seasonal demand rule
+  RC-DEMAND-BLOCK: Demand-dependent energy block
+  RC-MINIMUM-BILL: Minimum bill
+  RC-VOLTAGE-LOSS: Voltage / loss adjustment
+  RC-HISTORICAL-RATCHET: Historical ratchet
+  RC-VARIABLE-RIDER: Variable rider (monthly factor)
+  RC-INELIGIBLE-CANDIDATE: Ineligible new-enrollment candidate
+  RC-NEGATIVE-CREDIT: Negative credits
+  RC-DUPLICATE-REVISED: Duplicate and revised bills
+  RC-HELD-OUT: Held-out billing period after rule setup
+
+primitives:  # PRD §9.1
+  P-FIXED-LINEAR: Fixed and linear charges; cents vs dollars; kW vs kWh; exact decimal rates
+  P-TIERS: Progressive tiers with open-ended final tier; demand-dependent boundaries; allocate once; intermediate subtotals
+  P-CALENDAR-CONDITIONAL: Effective intervals, billing-month seasons, service voltage, tariff-specific conditions, TOU windows per candidate
+  P-HISTORY-FLOORS: Lookback windows, documented historical maxima, contract floors, max/min; measured/billed/firm/contract demand distinct; no circular dependencies
+  P-ADJUSTMENTS-MINIMUM: Ordered calculations, explicit percentage bases, losses, credits, reactive charges, minimum bill comparisons
+  P-DEPENDENCIES-PRECEDENCE: Independent versions for base/riders/factors/amendments; conflicts resolved with saved precedence and reasoning
+
+source_handling:
+  TOL-REFERENCE: §9.2 tolerance pass rule (abs/rel, unset terms omitted, ref zero uses absolute, pending when unset, component overrides)
+  SRC-COMPLETENESS: §9.3 source package completeness (document/version, effective interval, page/cell, required inputs, support state, URL snapshot, newer schedule only for its period)
+
+demo:  # PRD §10.1 demo sequence
+  DEMO-1: Facility/account list with legal utility entity, account, tariff, contract terms
+  DEMO-2: Review a monthly invoice showing quantities and clauses, riders/history handling, expected charge calculation
+  DEMO-3: Explain a difference, action, evidence for utility contact; capture recurring exception
+  DEMO-4: Compare Florida candidates on the same scenario with eligibility and trade-offs
+  DEMO-5: Review interpreted rules, source links and reference results; set tolerances; save versioned acceptance fixture
