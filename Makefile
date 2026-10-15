@@ -17,8 +17,8 @@ E2E_PORT ?= 8765
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
 
-setup: ## Install backend (uv) and frontend (npm) dependencies
-	$(UV) sync --all-extras
+setup: ## Install backend (uv) and frontend (npm) dependencies from lockfiles
+	$(UV) sync --all-extras --locked
 	$(NPM) ci
 
 check: lint typecheck backend-test frontend-test ## Lint + typecheck + all unit tests (the step gate)
@@ -38,8 +38,8 @@ backend-lint:
 backend-typecheck:
 	$(UV) run mypy
 
-backend-test: ## Run backend tests
-	$(UV) run pytest -q
+backend-test: ## Run backend tests (parallel)
+	$(UV) run pytest -q -n 4 --dist loadfile --durations=10
 
 frontend-lint:
 	$(NPM) run lint
@@ -69,9 +69,13 @@ openapi: ## Export OpenAPI schema and regenerate frontend API types
 	$(UV) run python -m tariff_app.openapi_export ../$(FRONTEND)/src/api/openapi.json
 	$(NPM) run gen:api
 
-openapi-check: ## Fail if the committed OpenAPI schema/types are stale
-	$(MAKE) openapi
-	git diff --exit-code -- $(FRONTEND)/src/api/openapi.json $(FRONTEND)/src/api/schema.d.ts
+openapi-check: ## Fail if the committed OpenAPI schema/types are stale (non-mutating)
+	@tmp=$$(mktemp -d) && \
+	$(UV) run python -m tariff_app.openapi_export $$tmp/openapi.json && \
+	cmp -s $$tmp/openapi.json $(FRONTEND)/src/api/openapi.json && \
+	(cd $(FRONTEND) && npx openapi-typescript $$tmp/openapi.json -o $$tmp/schema.d.ts >/dev/null) && \
+	cmp -s $$tmp/schema.d.ts $(FRONTEND)/src/api/schema.d.ts || \
+	(echo "OpenAPI schema/types are stale: run 'make openapi'"; exit 1)
 
 e2e: frontend-build ## Build SPA, start single-process server on a seeded temp workspace, run Playwright
 	./scripts/e2e.sh $(E2E_PORT)

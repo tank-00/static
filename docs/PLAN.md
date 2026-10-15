@@ -1,326 +1,566 @@
-# Utility Tariff Interpreter — MVP Execution Plan
+# Utility Tariff Interpreter — MVP Execution Plan (v2)
 
-Source of truth: `docs/PRD.md`. Technical contract: `docs/ARCHITECTURE.md`. This plan breaks the MVP into
-small, independently verifiable steps. **Every step ships code + tests, passes `make check`, is reviewed, and
-is committed before the next step starts.**
-
----
-
-## A. How each step is executed (the gate)
-
-For every step `Sxx` below:
-
-1. **Implement** — read the step spec, the cited PRD sections and the relevant ARCHITECTURE sections; write
-   code and tests; run the step's tests and `make check` until green. Scope discipline: implement what the
-   step says, nothing from later steps (stubs only where a later step is named).
-2. **Verify (in parallel)**
-   - *Spec reviewer*: checks the diff against the step spec, PRD requirements and ARCHITECTURE invariants
-     (§3); runs `make check`; reports concrete defects with severity (`blocker/major/minor`).
-   - *Adversarial prober*: writes probe tests in `backend/tests/_probes/` (gitignored) or
-     `frontend/src/__probes__/` targeting edge cases (boundaries, nulls vs zeros, units, ordering,
-     immutability, idempotency, invalid transitions) and reports failures as defects.
-3. **Fix** — address every blocker/major (and cheap minors); promote useful failing probes into the real test
-   suite; re-run `make check`. Repeat verify→fix up to 3 rounds.
-4. **Commit** — `make check` green → `git commit -m "Sxx: <title>"` (with session trailers). Pushed at the
-   end of each phase.
-
-**Definition of Done (all steps):** acceptance bullets satisfied; tests for each bullet exist with `req`
-markers where applicable; `make check` green; no TODOs for in-scope behavior; ARCHITECTURE updated if a
-contract detail had to change.
+Source of truth: `docs/PRD.md`. Technical contract: `docs/ARCHITECTURE.md` (cited as `A§n`). Each step ships
+code + tests, passes `make check`, is reviewed, and is committed before the next step starts. v2 splits large
+steps and adds the cross-step contracts surfaced by adversarial plan review.
 
 ---
 
-## B. Phases & dependency graph
+## A. Step gate (applies to every step)
+
+1. **Implement**: read the step spec, cited PRD sections and A§ sections; build on existing code. Write tests
+   for every bullet, with hand-derived expected values, and run `make check` until it is green. Implement only this
+   step; a stub is allowed only where a later step is named. If a contract detail must change, update
+   `docs/ARCHITECTURE.md` in the same change and report it as a deviation.
+2. **Verify** (two independent agents in parallel):
+   - *Spec reviewer*: checks the diff against the spec, PRD and A§3 invariants, and runs `make check`.
+   - *Adversarial prober*: writes probes in `backend/tests/_probes/` or `frontend/src/__probes__/` that target
+     boundaries, null vs zero, units, signs, ordering/determinism, immutability, idempotency, invalid
+     transitions and malformed input.
+3. **Fix**: fix every blocker and major (and cheap minors), promote useful probes into the real suite, and re-run
+   `make check`. Repeat verify → fix for up to 3 rounds.
+4. **Commit**: clear the probe directories, confirm `make check` is green, then
+   `git commit -m "Sxx: <title>"` with the session trailers. Each phase is pushed when it ends.
+
+**DoD:** every bullet has tests carrying `req` markers where applicable; `make check` is green within 180 s;
+there are no TODOs for in-scope behavior; and lockfiles changed only when the step adds a dependency.
+
+## B. Phases
 
 ```
-Phase 0  S00 environment & scaffold
-Phase 1  S01 → S02 → S03 → S04 → S05 → S06 → S07 → S08 → S09          (pure engine)
-Phase 2  S10 → S11 → S12 → S13 → S14 → S15 → S16 → S17 → S18 → S19 → S20 → S21 → S22 → S23 → S24
-Phase 3  S25 → S26 → S27 → S28 → S29 → S30 → S31 → S32                  (frontend on stable API + seed)
-Phase 4  S33 → S34                                                      (E2E demo, final audit)
+P0  S00
+P1  S01 S02 S03 S04 S05 S06 S07a S07b S08 S09                      pure engine
+P2  S10 S11 S12 S13 S14a S14b S15a S15b S15c S15d S15e S16a S16b S17 S18 S19 S20a S20b S21 S22 S23a S23b S24a S24b
+P3  S25 S26 S27a S27b S28a S28b S29a S29b S30 S31 S32               frontend on the stable API + seed
+P4  S33 S34                                                          E2E demo, final audit
 ```
 
 ---
 
 ## C. Steps
 
-### Phase 0 — Environment
+### P0 — Environment
 
-#### S00. Environment & scaffold
-- Backend `uv` project (`backend/pyproject.toml`) with packages `tariff_engine`, `tariff_app`; deps per
-  ARCHITECTURE §1; ruff/mypy/pytest config; `tests/` tree; `req` marker registered; `.gitignore`
-  (`.data/`, `tests/_probes/`, `node_modules`, `dist`, caches).
-- Minimal FastAPI app with `GET /api/v1/meta`; smoke tests (engine import + meta endpoint).
-- Frontend Vite React TS app, ESLint, Vitest, Testing Library, a smoke component test; dev proxy `/api`.
-- Root `Makefile` (ARCHITECTURE §12), `CLAUDE.md`, `README.md`, `docs/requirements.yaml` (all IDs),
-  GitHub Actions CI running `make check`; Claude Code SessionStart hook installing deps for cloud sessions.
-- **Tests:** backend smoke, frontend smoke; `make check` green.
+#### S00. Environment & scaffold *(done)*
+- Backend: uv project, FastAPI meta endpoint, ruff/mypy/pytest. Frontend: Vite React TS with Vitest and oxlint
+  (`--deny-warnings`). Playwright uses the preinstalled Chromium.
+- Makefile, CI, SessionStart hook, `CLAUDE.md`, docs, and `requirements.yaml`. Probe directories are isolated.
+- Follow-up chores (done with plan v2): add `pytest-xdist`, `pyyaml`, the Hypothesis profile and
+  `tests/strategies.py`; switch CI/setup to `uv sync --locked` + `npm ci`; make the hook run `npm ci` only when
+  `node_modules` is stale; run `backend-test` as `pytest -n 4 --dist loadfile --durations=10`; make
+  `openapi-check` non-mutating.
 
-### Phase 1 — Deterministic engine (`backend/src/tariff_engine`)
+### P1 — Deterministic engine (`backend/src/tariff_engine`)
 
-#### S01. Decimals & units — PRD §9.1 "Fixed and linear charges", R05
-- `decimals.py` (D(), engine_context, RoundingMode, quantize) and `units.py` (Unit, parse_unit, Quantity)
-  exactly per ARCHITECTURE §4.1–4.2.
-- No-float guard test (AST scan of `tariff_engine` for `float` usage and forbidden imports).
-- **Tests:** float rejection; each rounding mode incl. negatives and .5 ties; cents↔USD normalization
-  (`6.912 cents/kWh × 1000 kWh = 69.12 USD`); kW vs kWh incompatibility on `+`/compare; `kWh/kW = h`;
-  `q(200,h) × 1500 kW = 300000 kWh`; alias label preservation; Hypothesis: `(a+b)−b == a`, unit
-  algebra associativity/commutativity for `*`.
+#### S01. Dates, decimals, canonical JSON, units — A§4.0–4.2, A§3.1/3.3
+- `dates.py`: billing_days under both conventions, month arithmetic, `month_days`.
+- `decimals.py`: `D()`, `engine_context`, `RoundingMode`, `quantize`, `canonical_str`, `DecimalStr`,
+  `canonical_json`.
+- `units.py`: Unit, `parse_unit`, Quantity, aliases (incl. mills, kVAR/kVA as distinct dimensions), and the
+  unit-polymorphic zero rule.
+- Engine purity test: an AST scan that forbids float, `datetime.now`, random, uuid, time, and app/DB/web imports.
+- **Tests:**
+  - Float/bool rejected by `D()` and by `DecimalStr` (JSON number → error).
+  - `canonical_str(Decimal("1E+3")) == "1000"`; `-0.00` → `"0.00"`.
+  - `canonical_json` sorts keys and is byte-stable.
+  - Every rounding mode, including negatives and .5 ties.
+  - Units:
+    - `6.912 cents/kWh × 1000 kWh = 69.12 USD`, and `mills` scale.
+    - kW + kWh → UnitError; kW + kVAR → UnitError; USD/kW × kVAR is not USD.
+    - `kWh/kW = h`; `q(200,h) × 1500 kW = 300000 kWh`.
+  - Dates: billing_days inclusive vs read_to_read; `month_add("2026-07", -11) == "2025-08"`.
+  - Hypothesis (bounded strategies): `*` commutative/associative over units; `(a+b)−b == a` within bounds.
 
-#### S02. Expression language — R03 "formula", §9.1
-- `expressions.py` per ARCHITECTURE §4.3 (parser, whitelist, referenced_names, evaluate with Quantities,
-  MissingInputError, positions in errors, size/depth limits).
-- **Tests:** precision of literals (`0.1+0.2 == 0.3` exactly); `max(measured_demand_kw, 0.95 * peak_kw)`;
-  ternary + `in_months`; unit errors surface the offending sub-expression; rejected constructs (`__import__`,
-  attribute access, `**`, subscripts, lambdas, comprehensions, kwargs, unknown functions, huge input,
-  deep nesting); `referenced_names` excludes function names/built-ins; division by zero → CalcError;
-  missing input → MissingInputError naming the key.
+#### S02. Expression language — A§4.3, R03
+- Parser with whitelist, `referenced_names`, and `evaluate` over Quantities. Functions: `round_to` with mode,
+  `power_factor`, `apparent`, `as_reactive_equiv`, `in_months`, `q`. Built-ins: `billing_days`,
+  `days_in_billing_month`. Errors carry positions; size and depth limits.
+- **Tests:**
+  - Literal precision: `0.1+0.2 == 0.3` exactly.
+  - Expressions: `max(demand_measured_kw, 0.95 * x)`; ternary + `in_months`; `max(x_kW, 0)` (polymorphic zero).
+  - `round_to(-1.235, 2, "DOWN") == -1.23`; `power_factor(q(900,"kW"), q(436,"kVAR"))` hand-computed;
+    excess kVAR `max(kvar − as_reactive_equiv(kw)/3, 0)`.
+  - Rejected constructs: `__import__`, attribute, `**`, subscript, lambda, comprehension, kwargs, unknown
+    function, >2,000 chars, depth > 50.
+  - Errors: division by zero → CalcError; missing input → MissingInputError naming the key.
+  - `referenced_names` excludes functions and built-ins.
 
-#### S03. Rule model, validation & dependency graph — R03, R04, §9.1 "Dependencies and precedence"
-- `model.py` Pydantic models (ARCHITECTURE §4.4), JSON round-trip with decimals as strings.
-- `graph.py` (deps extraction across all calc types, deterministic topo order, cycle detection with path).
-- `validate_version`, `validate_package` with issue codes; package merge with precedence + override reasons.
-- **Tests:** valid sample version; each issue code triggered by a minimal bad fixture; cycle path reported;
-  duplicate key w/o override → error, with override reason → resolved with reason recorded; open tier not
-  last → error; by_period key format; JSON schema export of the model (used later by the rule editor).
+#### S03. Catalog, rule model, validation, package merge & graph — A§4.4–4.6, R03, R04, §9.1
+- `catalog.py` holds the A§4.4 table. `model.py` (A§4.5) round-trips JSON with `DecimalStr` and exports a JSON
+  schema.
+- `package.py`: name resolution (version-scoped vs package-scoped parameters), external_refs, overrides with
+  reasons (higher precedence wins), selector resolution, collision rules.
+- `graph.py`: deterministic topological order and cycle path.
+- `validate_version` / `validate_package` cover every A§4.5 issue code.
+- **Tests:**
+  - One minimal bad fixture per issue code.
+  - A rider with a percentage base on base keys validates when it declares externals and fails without them;
+    the package resolves it.
+  - Base and rider both define version-scoped `rate` → no collision.
+  - An amendment parameter override with a reason is applied and traced; equal-precedence collision → error.
+  - Cycle path reported. Unknown semantic type / catalog mismatch / TOU without definition_id → error.
+  - The selector `{roles:[charge], exclude:[...]}` resolves to a sorted list.
 
-#### S04. Primitive evaluators — §9.1 all rows
-- Evaluators for `fixed, rate, tiered, formula, percentage, minimum_bill, lookback`, applicability, rounding,
-  fallback, `by_period` parameter resolution, trace recording, used inputs/parameters with provenance.
-- **Tests (each with hand-computed values):** cents vs dollars rate; tiered allocation with open final tier
-  (each kWh allocated once; per-tier subtotals in trace); demand-linked blocks (`200 h × billing_demand`);
-  `round_each_tier`; percentage on explicit base; minimum bill both binding and non-binding; lookback with
-  `months_filter` summer-only, `include_current`, `min_points` shortfall → missing_input listing the exact
-  missing months; baseline_input (all-time peak) participates in max; by_period missing month →
-  missing_input naming the factor and month; applicability months; fallback to billed demand sets
-  `fallback_used`. Hypothesis: tier allocation conserves quantity and is monotone.
+#### S04. Primitive evaluators — A§4.5 calc types, A§4.7 step 4, §9.1
+- Evaluators: `fixed, rate, tiered` (bands + subtiers, `round_each_tier`), `formula, percentage, minimum_bill`,
+  `lookback` (windows, filter, aggregates, completeness, baseline, series_expr).
+- Also: applicability; rounding with downstream use of rounded values; component-level fallback; `by_period`
+  resolution; credit-sign check; traces; used inputs/parameters.
+- **Tests** (all hand-computed):
+  - Rates: cents vs dollars.
+  - Nested HUD blocks:
+    - BD=1,500 kW, 700,000 kWh → band1 300,000 (sub 3,000/7,000/190,000/100,000), band2 300,000,
+      band3 100,000, band4 0.
+    - BD=10 kW → band1 2,000.
+  - Billing demand rounded to whole kW feeds band sizes.
+  - Percentage base including a negative credit; minimum bill binding / non-binding / binding because of a
+    credit.
+  - Lookback:
+    - Month 2026-07, months_back 11, filter 6–9 → required {2025-08, 2025-09, 2026-06}; month 2026-10 →
+      {2026-06…2026-09}.
+    - One missing month → missing_input naming it. since_baseline with as-of 2024-03.
+    - Mean aggregate; series_expr (PF-adjusted); series_expr referencing a component → error.
+  - Missing `by_period` month → factor request; unresolved parameter → missing_source.
+  - Credit evaluating > 0 → error `credit_sign`.
+  - Hypothesis: tier allocation conserves quantity and is monotone.
 
-#### S05. Calculator orchestration, coverage & check scope — R05, R06 (partial), §2, §8 rows "Missing rider / history", "Dates and applicability", "Quantity provenance"
-- `calculator.py` per ARCHITECTURE §4.5: utility/territory gate, effective-version selection, cross-version
-  `prorate_by_days` (or blocked with request), merge, topo evaluation, status propagation, coverage,
-  expected_total vs supported_subtotal, deduped input requests, check scope.
-- **Tests:** complete case; missing rider factor → only supported subtotal + specific request; missing
-  history → specific months requested; dependency blocked propagation; awaiting_implementation →
-  unsupported and partial; wrong entity/territory → blocked; cross-version without/with allocation;
-  billed-demand-only → demand determination `unchecked`, measured+history → `checked`; determinism:
-  same input in shuffled member/component order → identical JSON; reported vs derived provenance retained.
+#### S05. Calculator orchestration, coverage & check scope — A§4.7, R05, §8 (missing rider/history, dates/applicability, provenance)
+- Source applicability gate; member windows; version selection per effective_basis; segments + prorate;
+  missing_source.
+- Merge; topological evaluation with A§4.7 4(c)–(d) fallback semantics (non-blocking requests).
+- Coverage, totals, check scope, assumptions, deduped requests, resolved_versions.
+- **Tests:**
+  - Complete case. Missing fuel-rider member/version → partial, supported subtotal excludes the rider, request
+    names the rider code + month. Missing history → one request per month.
+  - Status handling: dependency blocked → propagates; awaiting_implementation → unsupported;
+    awaiting_input → missing_source.
+  - Wrong entity/territory → blocked.
+  - Effective dates:
+    - 2026-05-15…2026-06-14 vs a change on 2026-06-01: weights 17/31 and 14/31 under prorate; blocked with an
+      allocation request under none.
+    - billing_month basis → single version, no request. Base and rider changing on different dates → 3
+      segments.
+  - Demand determination:
+    - Measured + billed present, 3/11 history months → billing demand = billed, `unchecked`, history requests
+      non-blocking.
+    - Measured + full history → `checked`. Neither → missing_input.
+  - Determinism: shuffled members/components/inputs → identical canonical JSON.
+  - Reported vs derived provenance retained.
 
-#### S06. Reconciliation, assessment & reference tolerance — R06, R07, §8 "Threshold boundary", "Zero and missing values", §9.2
-- `reconcile.py` per ARCHITECTURE §4.6 incl. one-to-many groups, balance bridge, offsets, totals rule,
-  `assess`, `classify_reference` (+ component overrides helper).
-- **Tests:** PRD boundary: expected 100000, billed 101000 → not flagged (exactly 1%); 101001 → flagged;
-  98999 → flagged (opposite direction), signed differences preserved; expected 0/billed 0 matched; expected
-  0/billed nonzero flagged; missing expected → coverage gap, not zero; empty required → unresolved;
-  offsetting +X/−X rows both visible with zero net; partial → no full expected total; unmapped current
-  charge blocks full total; balance bridge arithmetic incl. negative credits; tolerance rule incl. ref=0,
-  unset terms → pending, override precedence. Hypothesis: flag symmetric in sign; threshold monotonic.
+#### S06. Reconciliation, assessment & reference classification — A§4.8, R06, R07, §8 (threshold, zero/missing), §9.2
+- **Tests:**
+  - PRD boundaries at row and total level, both directions, signed differences: expected 100000 vs billed
+    101000 (not flagged), 101001 (flagged), 98999 (flagged).
+  - Credits: −100 vs −101 (not flagged), vs −101.01 (flagged).
+  - Zero and missing:
+    - 0/0 matched; 0/nonzero flagged.
+    - Missing expected → coverage gap, not zero; missing billed → billed_missing.
+  - Not-applicable / not-billed rows:
+    - Summer-only component not_applicable in January mapped to a $500 line → flagged.
+    - Calculated $120 rider with no line → not_billed, −120.00, flagged. A zero minimum-bill top-up with no
+      line → no row.
+  - Mapping rules:
+    - Summer + winter components on one line. Double mapping → error.
+    - Unmapped $50 line → reconciliation partial, no full total. Unreviewed group → partial.
+    - Coarse-group warning. group_key stable across a revised invoice.
+  - Subtotals: energy + fuel group (fuel missing) → covered subtotals consistent.
+  - Bridge:
+    - A $35 out-of-scope tax line and a −$200 balance credit → bridge difference 0.
+    - prior_period_adjustment; a null amount → incomplete.
+  - Offsetting +X/−X rows visible with zero net.
+  - Tolerances:
+    - USD pass/fail/pending; ref=0 uses only the absolute term.
+    - 1 kW determinant mismatch fails despite $5 tolerance; per-field override inheritance; overall roll-up.
+  - Hypothesis: flag symmetric in sign; cross-multiplication equals division whenever division is exact.
 
-#### S07. Synthetic tariff fixtures & golden reference cases — PRD §8 "Additional reference cases", §9 T1–T5
-- `backend/fixtures/synthetic/tariffs/*.json` — SYNTHETIC packages mirroring patterns (values invented,
-  labeled): `SYN-GA-PLL` (demand-dependent energy blocks, seasonal ratchet, contract floor, minimum bill,
-  reactive demand, linked % cost-recovery riders), `SYN-ELL-LIPS` (demand tiers, energy, reactive,
-  monthly fuel factor, facilities/loss terms, contract minimum, all-time-peak floor, closed to new
-  business), `SYN-ELL-LPS` (seasonal demand pricing, fuel, voltage credit, transformer losses, power-factor
-  adjustment, off-peak adjustment, contract floor), `SYN-FPL-GSLDT` (fixed, demand, TOU energy, fuel,
-  conservation, capacity, environmental, storm, curtailment credit as awaiting_implementation),
-  `SYN-GA-TOU-HLF` (TOU + eligibility conditions), and six Florida comparison candidates `SYN-FL-C1..C6`
-  (one closed-to-new-business, one ineligible new enrollment, one with TOU determinants).
-- `backend/fixtures/synthetic/reference_cases/*.json` — inputs + hand-computed expected component values
-  with a short derivation note per component; one held-out period per package.
-- **Tests:** every fixture validates; golden cases reproduce expected values exactly; required reference
-  cases each present and passing: seasonal demand rule, demand-dependent energy block, minimum bill,
-  voltage/loss adjustment, historical ratchet, variable rider, negative credit.
+#### S07a. Synthetic fixtures I + golden reference cases — A§11, PRD §8 additional cases, §9 T1–T3
+- Tariff fixtures (A§11 format) with separate rider/factor_table schedules and packages:
+  - `SYN-GA-PLL`: nested HUD blocks, 95% summer ratchet on billed demand, contract floor, minimum bill, excess-kVAR
+    charge, %-of-base cost-recovery riders as separate rider schedules.
+  - `SYN-ELL-LIPS`: demand tiers, energy, reactive, monthly fuel factor_table, facilities/loss terms, contract
+    minimum, all-time-peak baseline floor; status closed_to_new_business.
+  - `SYN-ELL-LPS`: seasonal demand, fuel, voltage credit, transformer losses, PF adjustment, off-peak
+    adjustment, contract floor.
+- Reference cases include RC seasonal demand, demand block, minimum bill, voltage/loss, historical ratchet,
+  variable rider and negative credit, plus one held-out month per package. Numbers are small and round.
+- An independent derivation evaluator (Decimal ops only) re-checks every `derivation`.
+- **Tests:**
+  - Every fixture validates; every ref_key is declared and every quote is on its page.
+  - Golden cases equal their expected values exactly. Derivations recompute.
+  - Catalog meta-test over fixtures.
 
-#### S08. Explanations — R08
-- `explain.py` per ARCHITECTURE §4.7.
-- **Tests:** each generator fires only on proving data and cites evidence; ambiguous difference →
-  `unresolved` "No documented cause"; no explanation without evidence; combined rate+quantity case does not
-  produce a false single cause; deterministic ordering.
+#### S07b. Synthetic fixtures II + Florida comparison set — A§11, §9 T4–T5, D07
+- `SYN-FPL-GSLDT`: governing sheet + separate summary document. Fixed, demand, TOU energy with definition_ids,
+  fuel/conservation/capacity/environmental/storm riders; curtailment credit `awaiting_implementation`.
+- `SYN-GA-TOU-HLF`: TOU + eligibility conditions.
+- Six Florida candidates `SYN-FL-C1..C6`: one closed_to_new_business, one ineligible new enrollment, one TOU with
+  a different window definition, one ratchet needing history.
+- `scenarios/fl_planned_2028.json`: 12 months (assumed inputs) plus reference cases per candidate package.
+- **Tests:** same as S07a; scenario fixture keys are in the catalog; every candidate package validates.
 
-#### S09. Comparison engine — R11, R12, §6 "Comparison output", §8 "Comparison and offsets"
-- `comparison.py` per ARCHITECTURE §4.8.
-- **Tests:** six candidates on a 12-month scenario; shared vs candidate-specific determinant compatibility
-  (flat monthly kWh cannot fill on-peak kWh → partial with request); unconfirmed/ineligible/closed-without-
-  evidence/reference-not-passed excluded from ranking with reasons; single-month reuse only with approval;
-  baseline diffs; cheapest label wording names scenario, horizon, candidate set; scenario-estimate label when
-  any assumed input; ties deterministic.
+#### S08. Explanations — A§4.9, R08
+- **Tests:**
+  - Each generator fires only on proving data, with evidence and the right status.
+  - rate_mismatch is suppressed on coarse groups; a combined rate + quantity difference does not yield a false
+    single cause.
+  - Unresolved → "No documented cause" with an invoice-line evidence link.
+  - ratchet_applied names the binding term. Deterministic ordering.
 
-### Phase 2 — Persistence, services & API (`backend/src/tariff_app`)
+#### S09. Comparison engine — A§4.10, R11, R12, §6
+- `derive_eligibility` + `compare`.
+- **Tests:**
+  - A six-candidate, 12-month scenario.
+  - Shared vs specific inputs: definition_id mismatch → partial with a candidate-specific request; a flat total
+    never fills on-peak.
+  - Eligibility:
+    - Grandfathered closed tariff with documented evidence and permitted use ranks; without evidence → excluded.
+    - Open conflict, unknown condition and site territory mismatch → each excluded.
+  - Every exclusion code.
+  - Ratchet candidate complete via history_inputs; partial without, naming the months. Chained
+    publishes_series within the horizon.
+  - Assumed future factor → scenario estimate. single_month_reuse only with approval.
+  - Baseline diff and its reasons; cheapest label wording incl. ties and k=0; cost drivers.
 
-#### S10. Database foundation
-- Config (ARCHITECTURE §11), engine/session, `DecimalText`, UTC datetime type, id generator, Clock, all ORM
-  models of ARCHITECTURE §5, Alembic initial migration, content-addressed file store, app factory with DI.
-- **Tests:** Decimal round-trip exactness (e.g. `0.1`, `123456789012345678.123456789`); null vs zero; FK
-  enforcement; migration == metadata (no drift); file store dedupe by sha256.
+### P2 — Persistence, services & API (`backend/src/tariff_app`)
 
-#### S11. Settings — R07, §7 "Workspace / settings", §9.2, D08
-- Service + API: current settings, version history, update (threshold, abs/rel tolerance, component
-  overrides) with reason → new version; defaults threshold `0.01`, tolerances unset.
-- **Tests:** defaults; validation (threshold ≥ 0, ≤ 1; tolerances ≥ 0); history preserved; current = latest.
+#### S10. DB & app foundation — A§5 (preamble), A§8 errors, A§10, A§12
+- Config, SQLAlchemy engine (connect event: `foreign_keys=ON`, WAL, `busy_timeout`, `check_same_thread=False`),
+  `DecimalText`, `UTCDateTime`, ids, Clock, JSON column with canonical serializer and float-rejecting
+  deserializer, content-addressed file store, event bus.
+- App factory with DI, lifespan `alembic upgrade head`, error envelope + OpenAPI cleanup, `ErrorOut`.
+- Alembic env (A§5 settings); tables `workspace`, `settings_version`, `tolerance_override` (revision
+  `s10_foundation`).
+- Test harness: session template DB copied per test, `db_session`/`client` fixtures, `factories.py` skeleton, and
+  a conftest hook rejecting unknown `req` IDs.
+- **Tests:**
+  - Decimal round-trip exactness: `0.1`, `123456789012345678.123456789`, `-0`. Null vs zero; JSON columns never
+    yield float.
+  - FK enforced. Drift test. File store dedupe.
+  - Error envelopes: AppError, HTTPException, validation error; the OpenAPI 422 → ErrorOut; a JSON number for a
+    decimal → 422 `decimal_must_be_string`.
 
-#### S12. Facilities, accounts, roster import & research candidates — R01, §9 "Coverage", Appendix A, D01
-- CRUD for facilities/production units/accounts/account facts (provenance, effective dates); roster import
-  CSV/XLSX → preview (row validation, duplicates, unknown columns) → confirm; research-candidate seeding
-  for the 13 Appendix A locations (record_status `research_candidate`, utility/rate blank); explicit
-  "confirm candidate → facility" action; scope classification for host-site/supplier accounts;
-  per-account configuration-coverage summary (stub fields filled by later steps).
-- **Tests:** import a 20-facility synthetic roster (CSV and XLSX) with multiple accounts per site; edit with
-  provenance; candidates excluded from confirmed lists until confirmed; ambiguous/duplicate rows reported.
+#### S11. Settings — R07, §7 workspace/settings, §9.2, D08
+- Service + API: current, history, update with reason → new version, overrides with unit.
+- **Tests:** defaults (0.01, tolerances unset); validation (0 ≤ threshold ≤ 1, tolerances ≥ 0); history; current =
+  latest; overrides; previous versions unchanged.
 
-#### S13. Documents & source references — R02, R03, §7 "Source document", §9.3
-- Upload (PDF/CSV/XLSX; size/type validation), sha256 dedupe (duplicate returns original), page text +
-  line extraction, unreadable-page detection → input request, document viewer API (pages/lines),
-  `source_ref` creation with quote validation, public URL snapshot metadata (source_url, retrieved_at).
-- **Tests:** generated synthetic PDFs (fpdf2) incl. one blank/unreadable page; duplicate upload; quote
-  not on page → 422; line locators stable.
+#### S12. Facilities, accounts, facts, research candidates, roster import — R01, §9 coverage, App. A, D01
+- CRUD for facilities (archive, not delete), production units, accounts, and account facts (provenance,
+  effective dates, superseding). Correction events for entity/territory/tariff_code.
+- Research candidates: separate table seeded with the 13 Appendix A locations (LCEC excluded; Cocoa and Texas
+  City planned). A confirm/match action links a candidate to a facility and copies no fields.
+- `fixtures/synthetic/roster_20.csv` (A§11; 20 facilities, more than 20 accounts).
+- Roster import CSV/XLSX: preview (row errors, duplicates, unknown columns, candidate match proposals) → confirm.
+- Scope classification. Events `account_fact.changed`. Readiness checks `roster_fields_confirmed` and
+  `scope_classified`.
+- **Tests:**
+  - Imports: 20-facility import via CSV and via XLSX; multi-account sites.
+  - Research candidates:
+    - 13 candidates with blank utility/rate. An Orlando roster row proposes the match and creates no duplicate.
+    - Confirming copies no research fields. Candidates are excluded from confirmed lists.
+  - Edits keep provenance. Archived ≠ deleted.
 
-#### S14. Tariff library, approval & account packages — R03, R04, §9.1, §9.3
-- Schedules, versions (draft create/edit → copy-on-write from approved), validation on save, approval with
-  reason/timestamp (blocked by validation errors), supersede on newer approval; component inventory with
-  support states; source passages linked to components (via source_ref); packages + members + precedence
-  reasons; account assignment (proposed → approved) with allocation rule; line mapping rules; import of
-  S07 fixture JSON; affected-analyses query stub (filled in S16); optional AI rule-draft endpoint (mocked).
-- **Tests:** approve/edit/copy-on-write; approval blocked with errors; wrong-territory assignment rejected;
-  version selection by effective date; inventory shows supported vs awaiting_implementation; passage linkage.
+#### S13. Documents, pages, source refs, synthetic PDF generator — R02, R03, §9.3
+- Upload (PDF/CSV/XLSX; type/size validation), hash dedupe (returns original), authority, URL snapshot rule.
+- Page/line extraction; spreadsheet normalization; unreadable pages → document request placeholder (wired in
+  S20b) and manual-transcription source_refs.
+- Source_ref validation (PDF quote / cell value); `replace` (successor + event); extraction retry without
+  re-upload.
+- `tariff_app.synthetic.pdfgen` (A§7).
+- **Tests:**
+  - Generated PDFs: identical specs → identical bytes; a blank page is unreadable.
+  - Uploads: duplicate upload; URL without file → 422; the same URL with new bytes → two documents.
+  - Source refs: quote not on page → 422; sheet locator → cell text.
+  - Extractor raises → document kept, retry succeeds. latin-1 enforcement.
 
-#### S15. Invoice intake, extraction & corrections — R02, R01 (ambiguous assignment), §2 "Required inputs", D02/D05
-- Heuristic extractor + optional Claude extractor (structured output; source-validated; mocked in tests);
-  proposal → confirm (with corrections) → invoice + lines + input set (reported determinants with
-  source refs, measured/billed/contract demand distinct); manual entry; corrections with
-  `correction_event` and new input-set versions; duplicate rejection; revision → explicit supersede;
-  ambiguous account match → `assignment_status=ambiguous` requiring confirmation; line mappings proposed
-  from approved mapping rules; demand history series from prior invoices.
-- **Tests:** synthetic invoice PDF extracts every field with locators; AI value not found in text dropped;
-  correction history; duplicate vs revised; ambiguous assignment; manual entry provenance; null preserved.
+#### S14a. Tariff schedules & versions — R03, R04, §9.1, §9.3, A§6.1, A§6.10
+- Schedules; versions as draft CRUD with validate-on-save; copy-on-write from approved; approval rules (no
+  errors, source snapshot, governing-source rule, no open conflicts).
+- Derived intervals; correction → superseded.
+- Component inventory with support states and passages.
+- `source_conflict` CRUD/resolve. Fixture importer (A§11). Preview endpoint (non-persisted). Event
+  `tariff_version.approved`.
+- **Tests:**
+  - Version lifecycle:
+    - Approve, then edit → draft; approval blocked with errors / without source document / summary-only refs.
+    - A conflict blocks; resolving with a summary ref → 422.
+    - v1 [2024-08-30,∞) + v2 [2026-06-01,∞): Nov-2025 → v1, Jul-2026 → v2. A correction supersedes only the
+      corrected version.
+  - Import round-trip: every component's refs resolve to a stored quote on the stated page.
+  - Preview creates no rows.
 
-#### S16. Analyses: run, snapshot, idempotency, staleness, states — R04, R05, §5 "Review states", §7
-- Create analysis = resolve approved package for account+period, build snapshot (package defs, context,
-  lines, mappings), run engine + reconcile + explain, store result, initial assessment. Fingerprint
-  idempotency; rerun → new version (supersede link); staleness propagation hooks (tariff approval, input
-  correction, invoice supersede, assignment change); affected-analyses listing; state machine with partial
-  acknowledgment; reviewed = immutable (409 on mutation); reproducibility check endpoint.
-- **Tests:** identical inputs reproduce identical amounts; retry returns same analysis; rule edit marks
-  drafts stale but not reviewed; rerun preserves prior and records approved version used; invalid
-  transitions rejected; unapproved assignment/rules prevent finalization.
+#### S14b. Packages, assignments, mapping rules, package resolution — A§6.2, R04
+- Package + package versions (members with windows, precedence, override reasons; draft → approved).
+- `resolve_package_def`. Assignments proposed → approved with an entity/territory check; the allocation rule is
+  approved separately.
+- line_mapping_rules (proposed → approved). Affected-analyses query (stub returning [] until S16b).
+- Readiness checks `package_version_approved`, `assignment_approved`, `versions_cover_invoice_periods`,
+  `components_supported`. Events.
+- **Tests:**
+  - Assignments: wrong territory rejected.
+  - Package resolution:
+    - A member added 2026-06 is ignored for 2026-03.
+    - A rider with no approved version for the month → MissingSource; base still resolves.
+    - A cross-version period returns both versions.
+  - Package versions: editing an approved package creates a draft; an override without a reason → 422.
 
-#### S17. Assessments, explanation reviews & review decisions — R07, R08, §5
-- Reevaluate with current settings → new assessment version (amounts reused); explanation statuses
-  (documented / awaiting confirmation / unresolved) with user confirmation + user-authored explanations
-  that must cite evidence; review decision (conclusion + notes) freezing the latest assessment.
-- **Tests:** threshold change → previous assessment untouched, new version differs; user explanation without
-  evidence rejected; review freezes; reviewed analysis rejects edits.
+#### S15a. Heuristic invoice extractor — A§7 grammar, R02
+- Pure function `list[PageText] → InvoiceProposal` with locators, catalog alias mapping and sign normalization.
+- **Tests:**
+  - Rendered synthetic invoice → every field, line and determinant with line locators.
+  - Formats: ¢/kWh rate; `1,234.56 CR` and `(1,234.56)` → −1234.56.
+  - Unknown label → warning; missing field → null (never 0).
 
-#### S18. Findings lifecycle — R09
-- Findings from rows/missing items/coverage gaps; lifecycle states with events; notes & next action;
-  confirmed billing error record; credit receipt requiring finding + supporting document; findings
-  remain open after review.
-- **Tests:** all transitions; distinct records for potential discrepancy / confirmed error / credit; credit
-  without document rejected; finding survives analysis rerun and links to originating version.
+#### S15b. Intake & confirm — A§6.5, R02, R01 (ambiguous assignment)
+- Extraction proposals persisted; confirm with corrections (idempotent) → invoice + lines + input set v1
+  (measured/billed/contract demand distinct, provenance, source refs).
+- Required fields → unresolved_fields. Duplicate/revision states + reject-duplicate/supersede actions.
+- Ambiguous account matching + confirm action. billing_month proposal. Events.
+- **Tests:**
+  - Extraction and confirm: a missing period_end is not defaulted and blocks; double confirm → one invoice.
+  - Duplicates:
+    - Same bytes → original returned. A re-rendered identical bill → probable_duplicate → reject.
+    - A changed line → revision_candidate → supersede v2.
+  - Ambiguous → confirm; demand types distinct.
 
-#### S19. Evidence exports — R10
-- CSV reconciliation (metadata header block + component rows + balance bridge + findings) and printable
-  HTML evidence report (Jinja2, print CSS) for a specific analysis + assessment version; superseded/older
-  analyses clearly labeled; synthetic labels; partial coverage, scenario estimates, unresolved issues shown.
-- **Tests:** parse CSV and compare every number to the saved analysis exactly; report contains IDs,
-  versions, scope notice, coverage, thresholds/tolerances, findings; older version banner.
+#### S15c. Corrections, manual entry, mappings & calc context — A§6.3 build_calc_context, R02, R06 mapping
+- Correction events on lines and inputs → new input-set versions; manual entry (provenance manual); account
+  exceptions CRUD.
+- Mapping proposals: approved rules first (reviewed=true, origin=rule), then ComponentDef.invoice_labels
+  (reviewed=false, label_match); manual mapping and review actions; double-mapping validation.
+- `build_calc_context` (facts overlay, conflicts, series from prior months). Readiness check
+  `invoice_labels_mapped`. Events.
+- **Tests:**
+  - Corrections: correction history kept; new input-set version.
+  - Calc context:
+    - A conflicting fact vs input → blocking issue.
+    - Series from a superseded invoice excluded; null history counts as missing.
+  - Mappings: label-match mapping unreviewed until confirmed.
 
-#### S20. Reference cases, validation status & account enablement — §8 "Reference calculation", §9.2, §10.1 D06/D08, R04 "Account enablement"
-- Reference case CRUD (from fixtures, or "save analysis as acceptance fixture"), runs classified with
-  tolerances (pending when unset), tariff-version `reference_status`, held-out cases; per-account
-  enablement checklist (package assembled, applicability approved, every invoice component mapped, support
-  states, reference status, outstanding documents) — "unsupported complete labels block enablement".
-- **Tests:** pass/fail/pending classification; override per component; enablement blocked by an
-  unsupported component; export fixture JSON round-trips.
+#### S15d. Billing-summary import — A§7, R02
+- CSV/XLSX upload → column mapping → preview (row errors, conflicts) → confirm → input values / history with
+  cell source_refs; re-import of the same file is a duplicate. Event `billing_history.imported`.
+- **Tests:** 24 months of measured demand feed a lookback; a baseline row with an as-of month; an unknown key is a
+  row error; a cell quote mismatch → 422.
 
-#### S21. Comparison scenarios service — R11, R12, D07
-- Scenario CRUD with versioning and diff; candidates with eligibility status/evidence/grandfathering;
-  shared and candidate-specific monthly inputs with provenance; approvals (single-month reuse, forecast);
-  run → persisted immutable result via engine `compare`; planned facilities supported (no invoices).
-- **Tests:** six-candidate scenario end-to-end; edited scenario keeps baseline version and shows diff;
-  closed-to-new without existing-eligibility evidence excluded; runs immutable.
+#### S15e. Optional AI proposals (mocked) — A§3.8, A§7, R02, R03, R08
+- `ClaudeInvoiceExtractor`, a tariff rule-draft endpoint, and an explanation-draft endpoint. All are disabled
+  without a key, use structured output and source validation, and only create proposals.
+- **Tests (mock client):** hallucinated value dropped; injected instructions in document text are ignored
+  (output still validated); disabled → 409 `ai_unavailable`.
 
-#### S22. Portfolio queue — §7 "Portfolio queue", R01
-- `GET /portfolio/queue` (invoices × latest analysis/assessment) filterable by facility, utility, period,
-  coverage, review state, threshold flag; accounts awaiting setup listed; research candidates separate;
-  per-account configuration vs calculation coverage.
-- **Tests:** each filter; 20 facilities; candidates segregated; awaiting-setup accounts visible.
+#### S16a. Analysis run — A§6.3, R04, R05, R06, R08
+- Create: assignment check, `resolve_package_def` + `build_calc_context`, snapshot, engine → reconcile →
+  explain, typed result, initial assessment, fingerprint idempotency (partial unique index, concurrent-safe).
+- Rerun → new version; reproducibility endpoint; account exceptions surface as explanation candidates.
+- **Tests:**
+  - Identical inputs → identical result JSON; retry → same analysis; two threads → one analysis; dict-order
+    shuffle → same fingerprint.
+  - No approved assignment → 409; draft versions never executed.
+  - Reconciliation coverage persisted (partial with an unmapped line).
 
-#### S23. Synthetic demo workspace seed — PRD §8 "Use clearly labeled synthetic cases", §10.1 demo
-- `python -m tariff_app.seed --reset`: settings, 13 research candidates, synthetic 20-facility roster with
-  accounts across the five patterns, synthetic tariff packages + generated tariff PDFs with passages,
-  approved assignments + mapping rules, 12 months of generated invoice PDFs per demo account (including a
-  rate error, revised bill, duplicate, negative credit, missing rider factor, billed-demand-only, cross-
-  version period), analyses, a few findings, six-candidate Florida comparison scenario, reference cases.
-- **Tests:** seed runs twice idempotently (`--reset`); counts; every seeded analysis reproducible.
+#### S16b. Lifecycle & staleness — A§6.3, R04, §5 review states, §7
+- State machine (partial ack, stale guard, reviewed immutability).
+- Event subscribers recompute fingerprints → stale + reasons; `newer_inputs_or_rules_exist`; affected-analyses
+  listing (fills the S14b stub).
+- **Tests:**
+  - Staleness: a parametrized test over each ingredient (contract fact, prior-month demand, package version,
+    mapping rule, document replace, input correction, invoice supersede) → draft stale with the right reason.
+  - Lifecycle: a reviewed analysis is unchanged and flagged; a stale draft cannot transition; rerun → new
+    version.
 
-#### S24. Acceptance matrix & traceability — PRD §8 entire
-- `tests/acceptance/` one module per matrix row + additional reference cases, through the service/API
-  layer on seeded or fixture data; meta-test: every ID in `docs/requirements.yaml` has ≥1 test;
-  `make traceability` generates `docs/TRACEABILITY.md`.
-- **Tests:** the suite itself; meta-test green.
+#### S17. Assessments, explanation reviews, review decisions — A§6.4, R07, R08
+- **Tests:**
+  - Reevaluation:
+    - Threshold change → old assessment untouched, new one differs.
+    - Reevaluate after a rule change + engine bump uses stored amounts (calculate spy not called).
+    - Reevaluate on a reviewed analysis → 201, status unchanged; idempotent per settings version.
+  - Explanations: a user explanation without evidence → 422.
+  - Review: stores reviewed_assessment_id + open findings snapshot; the reviewed label wording.
 
-### Phase 3 — Frontend (`frontend/`)
+#### S18. Findings lifecycle & account exceptions — A§6.12, R09
+- **Tests:**
+  - Every transition guard.
+  - Distinct records: potential discrepancy / confirmed error / credit; a credit without a document → 422.
+  - A finding survives a rerun; an exception surfaces on a later review as awaiting_confirmation.
 
-#### S25. Frontend foundation
-- `make openapi` + generated types + typed client; app shell (nav: Portfolio, Facilities, Tariffs, Comparisons,
-  Findings, Reference cases, Settings), routing, Query client, error boundary, design tokens, shared
-  components (ARCHITECTURE §9), `SyntheticBadge`, meta/AI availability banner.
-- **Tests:** shared components (Money exact-tooltip & rounded label, Variance sign/flag, CoverageBadge states),
-  routing smoke, API client error mapping; CI openapi drift check.
+#### S19. Analysis exports — R10, A§8 exports
+- CSV + printable HTML report per analysis + assessment.
+- **Tests:**
+  - CSV parsed with DictReader: every number equals the saved JSON (Decimal).
+  - Every R10 field is present: IDs, versions, notice, demand status, coverage + uncovered, threshold of the
+    *selected* assessment, tolerances or "Reference validation pending", assumptions, source refs, decision,
+    findings (at review + current).
+  - A 2% reevaluation keeps the v1 export at 1%. Older or superseded → banner. SYNTHETIC labels.
 
-#### S26. Portfolio queue, facilities & roster import UI — R01, §7
-- Queue with all filters + awaiting-setup + research candidates section; facility list/detail; account page
-  (details, facts with provenance, documents, tariff versions, analyses, findings, configuration vs
-  calculation coverage, enablement checklist); roster import wizard (upload → preview → confirm).
-- **Tests:** filter interactions; candidate confirm action; import wizard error rows.
+#### S20a. Reference cases & runs — A§6.7, §8 reference calculation, §9.2, D06, D08, demo step 5
+- Case import from fixtures; approval; "save analysis as acceptance fixture" (JSON export/import).
+- Runs (approved versions), reclassify on tolerance change, held-out rule, computed package reference status.
+- **Tests:**
+  - An unapproved passing case doesn't count; a synthetic case doesn't validate a real account.
+  - Held-out earlier than setup → 422. Reclassify creates new runs without recalculation.
+  - Unset tolerances → pending → package pending. Fixture JSON round-trip.
 
-#### S27. Documents & invoice intake UI — R02
-- Upload with duplicate/revision prompts; document viewer (pages/lines, unreadable pages); extraction review
-  with source highlights; confirm/correct fields (units, dates, demand types) with reasons; manual entry;
-  input-set versions + correction history; ambiguous assignment confirmation; mapping review.
-- **Tests:** duplicate prompt; correction requires reason; measured/billed/contract demand distinct.
+#### S20b. Document requests & account readiness/enablement — A§6.8, A§6.9, R01, R04, §10
+- `refresh_document_requests`; request receive/waive; AccountReadiness service + `POST /accounts/{id}/enable`;
+  lapse events.
+- **Tests:**
+  - Document requests:
+    - 10 of 12 bills → exactly 2 D02 requests naming the months.
+    - A LIPS package → baseline D05; a 24-month lookback → 12 extra months.
+    - Upload marks received.
+  - Readiness: a configured account with partial calc and an unconfigured account with a complete analysis show
+    statuses independently.
+  - Enablement:
+    - Blocked by a failing run (`known_incorrect_calculation`), by an awaiting_implementation component and by
+      open D01–D04 requests.
+    - Enablement lapses when a blocker reappears.
 
-#### S28. Tariff library & reference cases UI — R03, R04, §9.2
-- Schedules/versions/components inventory with support badges; component detail (formula, params, units,
-  applicability, rounding, deps, exact passage); draft editing (structured JSON editor with validation
-  issues); approve with reason; package + assignment approval; mapping rules; affected analyses + rerun;
-  reference cases & runs with pass/fail/pending.
-- **Tests:** approval disabled with validation errors; edit-approved creates draft; passage display.
+#### S21. Comparison scenarios service & exports — A§6.11, R11, R12, R10
+- Scenario CRUD with versions + diff; candidates with the eligibility model and evidence validation; inputs
+  (horizon/history/parameter assumptions) incl. CSV import via the S15d parser.
+- Run → immutable result; comparison CSV + printable report; planned facility without invoices; D07 requests.
+- **Tests:**
+  - Six-candidate run on the fixture.
+  - Eligibility: `eligible` without evidence → 422; closed without existing evidence excluded.
+  - Tolerances: unset → every candidate `reference_pending`; after tolerances + reference runs → eligible
+    modeled candidates rank.
+  - Versions: an edited scenario keeps v1 and the diff shows changed assumptions.
+  - Exports: export numbers equal the run; partial TOU + scenario-estimate label in exports.
 
-#### S29. Invoice review screen — R05–R10, §5 tables
-- The five-question layout; component table with signed diff/%/flag/check scope; evidence drawer (rule,
-  passage, trace, invoice line source, inputs with provenance); explanations with statuses; input requests;
-  supported subtotal vs full total; balance bridge; partial acknowledgment; decision; create finding from row;
-  version history (analysis versions, assessments, reevaluate); exports (CSV, report).
-- **Tests:** partial shows subtotal + uncovered and no full total; offsets visible; threshold label; ack required.
+#### S22. Portfolio queue — PRD §7, R01
+- `GET /portfolio/queue` filters: facility, utility, period, coverage, review state, threshold flag. Lists
+  awaiting-setup accounts and a separate research-candidates section; configuration vs calculation coverage
+  side by side.
+- **Tests:** each filter; 20 facilities; candidates segregated; awaiting-setup visible; flags use the current
+  assessment.
+
+#### S23a. Demo manifest & workspace seed — A§11 demo_manifest, PRD §8, §10.1
+- `demo_manifest.json`: SYN-F01..F20, each with ≥1 in-scope account; five pattern demo accounts; ≥2 awaiting-setup
+  accounts; host-site account; planned SYN-F20.
+- `python -m tariff_app.seed --reset [--profile minimal|full] [--demo-tolerances]` with `FixedClock`:
+  settings v1 defaults (tolerances unset), research candidates, facilities/accounts/facts, documents + tariff
+  imports + approvals, packages, assignments, mapping rules.
+- **Tests:** a minimal profile seeds twice identically; counts; everything addressable by code.
+
+#### S23b. Demo seed — invoices, analyses, findings, scenario, reference runs
+- 12 months of generated invoices for the five demo accounts (2025-10..2026-09) and a 2026-09 invoice for every
+  other in-scope account.
+- Named cases (rate_error, revised_bill, duplicate_upload, negative_credit, missing_rider_factor,
+  billed_demand_only, cross_version, offsetting_lines, threshold_exact_1pct, threshold_above_1pct).
+- Analyses, a few findings, approved reference cases + runs (pending under v1), the Florida scenario on SYN-F20.
+  Full seed ≤ 30 s, built once per pytest session as a template.
+- **Tests:** every seeded analysis is reproducible; each named case shows its intended flag/coverage; tolerances
+  unset → pending.
+
+#### S24a. Acceptance matrix & traceability — PRD §8, A§10
+- `tests/acceptance/`: one module per matrix row + additional reference cases, using the seed template or
+  fixtures via the service/API layer.
+- Static AST meta-test: every backend-layer ID covered, no unknown IDs. `make traceability` → `docs/TRACEABILITY.md`.
+- **Tests:** the suite itself and the meta-test.
+
+#### S24b. UI read models & OpenAPI contract — A§8 read models, A§9
+- `GET /views/analyses/{id}/review`, `/views/accounts/{id}/overview`, `/views/comparison-scenarios/{id}`.
+- `tariff_app.openapi_export` + `make openapi` / `openapi-check` (added to `make check`); a test fails on
+  schemaless response objects.
+- **Tests:** each view's fields against seeded named cases; OpenAPI determinism; no `additionalProperties: {}` /
+  untyped objects in responses.
+
+### P3 — Frontend (`frontend/`)
+Every UI step: tests tagged `// req: ID`, mocked API via `mockApi`, generated types only. Prober checks the
+running UI with Playwright screenshots on a seeded workspace.
+
+#### S25. Frontend foundation — A§9
+- Generated client + `ApiProvider`; app shell/nav; routing; Query client; error boundary mapping `ErrorOut`.
+- `lib/decimal.ts`; shared components; meta/AI/SYNTHETIC banner; `mockApi`; `renderWithProviders`.
+- **Tests:**
+  - `formatDecimal` / `formatPercent` cases (A§9).
+  - Components: Money tooltip + rounded label; Variance sign / flag / n/a; CoverageBadge states.
+  - Routing smoke; error mapping.
+  - A lint/test banning Number/parseFloat on amounts.
+
+#### S26. Portfolio, facilities, accounts, research candidates, roster import UI — R01, §7, A§6.9
+- **Tests:** queue filters; awaiting-setup and candidates sections; the account page shows configuration vs
+  calculation coverage, readiness blockers, document requests and validated components; the import wizard shows
+  error rows; candidate confirm.
+
+#### S27a. Documents UI — R02
+- Upload with duplicate prompts, viewer (pages/lines, unreadable pages), replace, extraction retry.
+- **Tests:** duplicate prompt; unreadable page request; line highlight for a source_ref.
+
+#### S27b. Invoice intake UI — R02, R06 mapping
+- Proposal review with source highlights; confirm/correct (reason required; units/dates; demand types distinct);
+  unresolved fields; duplicate/revision resolution.
+- Ambiguous account; input-set history; mapping review; billing-summary import wizard.
+- **Tests:** correction requires a reason; demand types distinct; unresolved fields block analysis; revision
+  supersede flow.
+
+#### S28a. Tariff library UI — R03, R04
+- Schedules/versions; component inventory with three support badges; component detail (formula, params, units,
+  applicability, rounding, deps, exact passage); draft JSON editor showing validation issues.
+- Approve with reason (disabled with errors); conflicts; preview.
+- **Tests:** approve disabled with errors; edit-approved creates a draft; passage shown; summary-only warning.
+
+#### S28b. Packages, assignments, mapping rules, reference cases UI — R04, §9.2
+- Package versions, assignment approval and allocation rule, mapping rules, affected analyses + rerun, reference
+  cases/runs (pass/fail/pending), save-as-fixture.
+- **Tests:** affected list + rerun; pending label when tolerances are unset; approval flows.
+
+#### S29a. Review screen (read-only) — PRD §5 tables, R05–R08, REVIEW-SCREEN
+- Built on `GET /views/analyses/{id}/review`.
+- **Tests:** one per §5 question across complete / partial / billed-demand-only / expected-zero /
+  unset-tolerance variants:
+  - Header fields.
+  - Coverage badge + exact notice + "Demand determination: unchecked" + input requests.
+  - Subtotals: covered subtotals and no full total when partial; a separate bridge.
+  - Row values: signed diff / pct / flag; "n/a" pct; offsetting rows visible.
+  - Evidence drawer with exact passage, trace, invoice line source and input provenance.
+  - Rounded-display label.
+
+#### S29b. Review actions — R04, R07–R10, review states
+- Source-linked "Correct value" (reason → new version → stale banner → rerun); explanation confirm/reject/add;
+  partial acknowledgment; submit/review decision with the fixed label.
+- Create a finding from a row; reevaluate (new assessment visible); version history; CSV/report links.
+- **Tests:** ack required; stale blocks submit; reevaluate shows v2 and keeps v1; finding creation; export links
+  carry the assessment.
 
 #### S30. Findings workspace — R09
-- List/filter; detail with lifecycle transitions, notes, next action, evidence links, confirmed error, credit
-  receipt with document upload/link.
-- **Tests:** transitions; credit requires document.
+- **Tests:** list filters; transitions and guards (outcome on close, below-threshold check); confirmed error;
+  credit receipt requires a document.
 
 #### S31. Comparison UI — R11, R12, §6
-- Scenario list/editor (horizon, shared monthly inputs, approvals), candidates (eligibility, evidence,
-  grandfathering, commitments, unmodeled conditions, specific inputs), run + results (components, totals,
-  baseline diff, coverage, ranking, exclusion reasons, cheapest label, scenario-estimate label), versions diff.
-- **Tests:** excluded candidates not ranked; labels; diff view.
+- Scenario list/editor: horizon, shared/history inputs, approvals for reuse/forecast.
+- Candidate editor: the eligibility model with evidence, conditions, conflicts, commitments, unmodeled
+  conditions.
+- Run results: components, totals, baseline diff, coverage, missing TOU requests, ranking, exclusion reasons,
+  cheapest label, scenario-estimate banner. Version diff; exports.
+- **Tests:** excluded candidates are not ranked and show reasons; the cheapest label is null with k=0; diff view.
 
 #### S32. Settings UI — R07, §9.2, D08
-- Threshold & tolerances (incl. component overrides) with reason and meaning text; version history;
-  "reevaluate" guidance for affected analyses.
-- **Tests:** validation; history rendering.
+- **Tests:** threshold/tolerance edit with reason and meaning text; overrides; history; "reevaluate affected
+  analyses" guidance.
 
-### Phase 4 — Integration
+### P4 — Integration
 
-#### S33. Single-process serving & E2E demo — PRD §10.1 demo sequence, "Engineering completion checks"
-- FastAPI serves built SPA (`make run`), Playwright E2E on a seeded workspace: (1) facility/account with
-  entity/tariff/contract terms; (2) review a monthly invoice with quantities and clauses; (3) explain a
-  difference, create a finding, export evidence; (4) compare six Florida candidates; (5) review rules,
-  sources, reference results, set tolerances, save acceptance fixture. Plus 20-facility queue and threshold
-  edit → reevaluate preserving prior assessment.
-- **Tests:** the E2E suite (`make e2e`), screenshots saved as artifacts.
+#### S33. Single-process serving & E2E demo — PRD §10.1, completion checks
+- SPA fallback route (TestClient tested); `make e2e` on a seeded temp workspace.
+- One serial demo spec (DEMO-1..5 in PRD order):
+  1. Facility/account with entity, tariff and contract terms.
+  2. Review an invoice: quantities and clauses, rider/history handling.
+  3. Explain a difference → finding → export.
+  4. Compare six candidates: all excluded "Reference validation pending".
+  5. Rules + passages + reference results → set tolerances → reference runs pass → rerun the comparison → ranking
+     + cheapest label → save fixture.
+- Further scenarios:
+  - Correct a determinant → stale → rerun v2 (v1 unchanged).
+  - Exactly 1% (unflagged) vs 1.001% (flagged).
+  - Threshold edit → reevaluate keeps the prior assessment.
+  - The account page shows validated components, document requests and awaiting_implementation components.
+  - The 20-facility queue.
+- Extend the traceability scan to frontend/E2E layers.
+- **Tests:** E2E suite green, with screenshots kept as artifacts.
 
 #### S34. Final audit & documentation
-- Adversarial requirement-by-requirement audit (R01–R12, §5 tables, §7, §8, §9) against running code;
-  fix gaps; README (setup, demo walkthrough), user guide, known limitations, traceability regenerated.
-- **Tests:** full `make check` + `make e2e` green.
+- Adversarial audit, requirement by requirement, against the running app; fix gaps.
+- Docs: README walkthrough, user guide, known limitations; traceability regenerated.
+- **Tests:** `make check` + `make e2e` green.

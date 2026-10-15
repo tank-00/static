@@ -1,66 +1,122 @@
-# Requirement / acceptance IDs used by `@pytest.mark.req(...)` (backend) and `// req:` tags (frontend/E2E).
-# S24 adds a meta-test asserting every ID below is covered by at least one test and generates
-# docs/TRACEABILITY.md. IDs are stable; add new ones rather than renaming.
+# Requirement / acceptance IDs for traceability.
+# Backend tests: @pytest.mark.req("ID", ...). Frontend/E2E tests: a `// req: ID` comment in the test file.
+# `layer` says which test layer must cover the ID. From S10 on, a conftest hook rejects unknown IDs. S24a's static
+# meta-test asserts every backend-layer ID is covered; S33 extends it to the frontend and e2e layers.
+# IDs are stable: add new ones rather than renaming.
 
-requirements:
-  R01: Facility and account workspace (~20 facilities, accounts, candidates require confirmation, ambiguous invoice assignment, configuration vs calculation coverage)
-  R02: Upload, extract and confirm (PDF/CSV/XLSX, originals preserved, source-linked values, corrections with provenance, unreadable pages, duplicates/revisions, demand types)
-  R03: Structured tariff rules with evidence (components, exact source passage, entity/territory/status, riders and amendments as dependencies, inventory and engine support)
-  R04: Approval and version control (approval with timestamp/reason, stale drafts, reproducible completed analyses, reruns preserve prior, account enablement)
-  R05: Reproducible calculation (deterministic arithmetic, units, precision/rounding, reported vs derived, partial/blocked, tolerances pending when unset)
-  R06: Line-level and total reconciliation (mappings incl. one-to-many, signed difference, percentage rule, full total only when complete, balance bridge, offsets visible)
-  R07: Investigation thresholds (default 1%, editable, both directions, exactly 1% within, zero cases, new assessment version on reevaluation)
-  R08: Explanation and review decision (evidence-linked explanations with status, no unsupported causal claims, decision and notes, tolerance vs materiality separate)
-  R09: Finding lifecycle and follow-up (states, amount/account/period/evidence/notes/next action, distinct discrepancy/confirmed error/credit, credit links document + finding)
-  R10: Evidence export (CSV + printable report with IDs, versions, scope, coverage, values, settings, assumptions, sources, decision, findings; numbers match; versioned)
-  R11: Candidate set and operating scenario (eligibility status/evidence, grandfathering separate, baseline and edited scenarios, closed-to-new requires documented eligibility)
-  R12: Comparable cost and conditions (same scenario, components, baseline diff, commitments, unmodeled conditions, rank only eligible + fully modeled, cheapest label names scenario/horizon/set, determinant compatibility, scenario estimate label)
-
-screens_and_states:
-  REVIEW-SCREEN: Main review screen answers the five PRD §5 questions
-  REVIEW-STATES: Draft -> Ready for review -> Reviewed; partial requires acknowledgment; source changes new draft; threshold changes new assessment; findings independent
-  PORTFOLIO-QUEUE: Portfolio queue filters (facility, utility, period, coverage, review state, threshold flag), awaiting-setup accounts, research candidates separate (PRD §7)
-  PROC-SEQUENCE: Processing sequence (§7) - stale drafts, immutable completed runs, settings-only changes reuse amounts, safe retries avoid duplicates
-  ANNUAL-SCENARIO: Annual scenarios require 12 monthly input sets or approved forecast; single-month reuse requires visible approval (§6)
-
-acceptance_matrix:  # PRD §8 "Required acceptance-test matrix"
-  AT-REFERENCE: Reference calculation within configured tolerances; arithmetic and rounding tests pass
-  AT-THRESHOLD: Expected $100,000 - billed $101,000 at 1% (not flagged), $101,001 flagged, $98,999 flagged; signed differences preserved
-  AT-ZERO-MISSING: Expected zero/billed nonzero requires review; missing expected is partial, distinct from zero; empty required fields unresolved
-  AT-MISSING-RIDER-HISTORY: Identify specific missing source or historical determinant; only supported subtotals until resolved
-  AT-DATES-APPLICABILITY: Source effective for account and period; cross-version bills need approved allocation rule; wrong utility/territory blocks use
-  AT-QUANTITY-PROVENANCE: Invoice-based checks keep unverified-usage label; billed demand alone leaves demand determination unchecked; manual assumptions visible
-  AT-VERSIONING-EXPORTS: Corrections create new versions; historical reports reproducible; exported figures, limitations and settings match saved analysis
-  AT-COMPARISON-OFFSETS: Unresolved candidates excluded from ranking; missing TOU quantities explicit; opposite line differences visible despite zero net
-  AT-PORTFOLIO-SETTINGS: One user reviews 20 facilities and six candidates; editing threshold/tolerance preserves previous assessment versions
-
-reference_cases:  # PRD §8 "Additional reference cases"
-  RC-SEASONAL-DEMAND: Seasonal demand rule
-  RC-DEMAND-BLOCK: Demand-dependent energy block
-  RC-MINIMUM-BILL: Minimum bill
-  RC-VOLTAGE-LOSS: Voltage / loss adjustment
-  RC-HISTORICAL-RATCHET: Historical ratchet
-  RC-VARIABLE-RIDER: Variable rider (monthly factor)
-  RC-INELIGIBLE-CANDIDATE: Ineligible new-enrollment candidate
-  RC-NEGATIVE-CREDIT: Negative credits
-  RC-DUPLICATE-REVISED: Duplicate and revised bills
-  RC-HELD-OUT: Held-out billing period after rule setup
-
-primitives:  # PRD §9.1
-  P-FIXED-LINEAR: Fixed and linear charges; cents vs dollars; kW vs kWh; exact decimal rates
-  P-TIERS: Progressive tiers with open-ended final tier; demand-dependent boundaries; allocate once; intermediate subtotals
-  P-CALENDAR-CONDITIONAL: Effective intervals, billing-month seasons, service voltage, tariff-specific conditions, TOU windows per candidate
-  P-HISTORY-FLOORS: Lookback windows, documented historical maxima, contract floors, max/min; measured/billed/firm/contract demand distinct; no circular dependencies
-  P-ADJUSTMENTS-MINIMUM: Ordered calculations, explicit percentage bases, losses, credits, reactive charges, minimum bill comparisons
-  P-DEPENDENCIES-PRECEDENCE: Independent versions for base/riders/factors/amendments; conflicts resolved with saved precedence and reasoning
-
-source_handling:
-  TOL-REFERENCE: §9.2 tolerance pass rule (abs/rel, unset terms omitted, ref zero uses absolute, pending when unset, component overrides)
-  SRC-COMPLETENESS: §9.3 source package completeness (document/version, effective interval, page/cell, required inputs, support state, URL snapshot, newer schedule only for its period)
-
-demo:  # PRD §10.1 demo sequence
-  DEMO-1: Facility/account list with legal utility entity, account, tariff, contract terms
-  DEMO-2: Review a monthly invoice showing quantities and clauses, riders/history handling, expected charge calculation
-  DEMO-3: Explain a difference, action, evidence for utility contact; capture recurring exception
-  DEMO-4: Compare Florida candidates on the same scenario with eligibility and trade-offs
-  DEMO-5: Review interpreted rules, source links and reference results; set tolerances; save versioned acceptance fixture
+R01-ROSTER20: {layer: backend, text: "Import/edit a 20-facility roster with one or more accounts per facility (R01)"}
+R01-AMBIG-ASSIGN: {layer: backend, text: "Ambiguous invoice-to-account assignment requests confirmation (R01)"}
+R01-CONFIG-VS-CALC: {layer: backend, text: "Each account shows configuration and calculation coverage independently (R01)"}
+R01-CANDIDATE-CONFIRM: {layer: backend, text: "Public candidate sites require confirmation before becoming configured; research evidence stays separate (R01, §1, §9)"}
+R02-ORIGINALS: {layer: backend, text: "Originals preserved with content hash; source-linked extracted values (R02, §7)"}
+R02-UNREADABLE: {layer: backend, text: "Unreadable pages request replacement or manual transcription (R02)"}
+R02-EDIT-UNITS-DATES: {layer: backend, text: "Every input inspectable and editable including units and dates (R02)"}
+R02-PROVENANCE: {layer: backend, text: "Corrections and manual entries keep provenance and history (R02, §7 input set)"}
+R02-DEMAND-TYPES: {layer: backend, text: "Measured, billed and contract demand are distinguished (R02)"}
+R02-DUP: {layer: backend, text: "Duplicate handling prevents accidental duplicate reviews (R02)"}
+R02-REVISION: {layer: backend, text: "Revised bills explicitly supersede prior versions (R02)"}
+R02-SUMMARY-IMPORT: {layer: backend, text: "CSV/XLSX billing summaries import with source-linked values (R02)"}
+R03-CHARGE-TO-PASSAGE: {layer: backend, text: "Navigate from a calculated charge to the rule and exact supporting passage (R03)"}
+R03-UNRESOLVED-BLOCKS: {layer: backend, text: "Unresolved terms block the affected component (R03)"}
+R03-INVENTORY: {layer: backend, text: "Component inventory shows which elements the engine supports (R03)"}
+R03-ENTITY-TERRITORY-STATUS: {layer: backend, text: "Store legal utility entity, service territory and tariff status (R03)"}
+R03-RIDERS-AS-DEPENDENCIES: {layer: backend, text: "Linked riders and private amendments are individual dependencies (R03, §9.1)"}
+R04-APPROVAL: {layer: backend, text: "Michael approves rules and applicability with timestamp and reason before finalization (R04)"}
+R04-STALE: {layer: backend, text: "A source or rule edit marks affected drafts stale; affected analyses identified for explicit rerun (R04, §7)"}
+R04-REPRODUCIBLE: {layer: backend, text: "Completed analyses remain reproducible and unchanged (R04)"}
+R04-RERUN-PRESERVES: {layer: backend, text: "Every rerun preserves the prior result and identifies the approved version used (R04)"}
+R04-SUPPORT-STATES: {layer: backend, text: "Component status supported / awaiting input / awaiting implementation (R04 account enablement)"}
+R04-ENABLEMENT: {layer: backend, text: "Account enablement; unresolved component prevents complete coverage; unsupported complete labels block enablement (R04, §8)"}
+R05-DETERMINISM: {layer: backend, text: "Identical versioned inputs reproduce identical amounts (R05)"}
+R05-UNITS-ROUNDING: {layer: backend, text: "Explicit units and tariff-specific precision/rounding (R05, §9.1)"}
+R05-REPORTED-VS-DERIVED: {layer: backend, text: "Reported quantities distinguished from derived billing determinants (R05)"}
+R05-PARTIAL-BLOCKED: {layer: backend, text: "Missing inputs produce partial or blocked results (R05)"}
+R05-TOL-PENDING: {layer: backend, text: "Unset tolerances show 'Reference validation pending' (R05)"}
+R06-MAPPING: {layer: backend, text: "Invoice lines map to components incl. reviewed one-to-many mappings (R06)"}
+R06-SIGNED-DIFF: {layer: backend, text: "Signed difference = billed minus expected (R06)"}
+R06-FULL-TOTAL-ONLY-COMPLETE: {layer: backend, text: "Full expected total only when its complete calculation basis is covered (R06)"}
+R06-PARTIAL-SUBTOTAL: {layer: backend, text: "Partial results show supported subtotal and all uncovered components (R06)"}
+R06-OFFSETS: {layer: backend, text: "Line-level differences shown even when positive and negative cancel (R06)"}
+R06-PCT-ZERO-EXPECTED: {layer: backend, text: "Expected zero has no percentage denominator (R06)"}
+R06-EXACT-VS-DISPLAY: {layer: backend, text: "Exact stored values for threshold evaluation; rounded display labeled (R06)"}
+R06-BRIDGE: {layer: backend, text: "Prior balances, credits, payments and other balance items bridged separately (R06)"}
+R07-BOUNDARY: {layer: backend, text: "Default 1%; strictly greater flags; both directions (R07)"}
+R07-ZERO: {layer: backend, text: "Nonzero billed vs expected zero requires review; both zero matched (R07)"}
+R07-EDITABLE: {layer: backend, text: "Investigation threshold editable in Settings; no dollar threshold required (R07)"}
+R07-REEVALUATE-SNAPSHOT: {layer: backend, text: "Threshold change creates a new assessment version on explicit reevaluation; previous reports keep saved setting (R07, §7)"}
+R08-EVIDENCE: {layer: backend, text: "Every explanation links to rule, invoice line or input; unsupported causal claims omitted (R08)"}
+R08-STATUSES: {layer: backend, text: "Explanations marked documented / awaiting confirmation / unresolved (R08)"}
+R08-DECISION: {layer: backend, text: "Michael's conclusion and notes saved; finalizing preserves scope, coverage and open findings (R08)"}
+R08-SEPARATE-SETTINGS: {layer: backend, text: "Numerical tolerance and investigation materiality are separate settings (R08)"}
+R09-STATES: {layer: backend, text: "Finding states and lifecycle with amount/account/period/evidence/notes/next action (R09)"}
+R09-DISTINCT-RECORDS: {layer: backend, text: "Potential discrepancy, confirmed billing error and received credit are distinct records (R09)"}
+R09-CREDIT-LINKS: {layer: backend, text: "Received credit links to supporting documentation and the finding (R09)"}
+R09-OPEN-AFTER-REVIEW: {layer: backend, text: "User can review the invoice and leave a follow-up finding open (R09)"}
+R10-FIELDS: {layer: backend, text: "Exports include all R10 fields (R10)"}
+R10-NUMBERS-MATCH: {layer: backend, text: "Exported numbers match the saved analysis (R10)"}
+R10-OLDER-VERSIONED: {layer: backend, text: "Report from an older analysis is clearly versioned (R10)"}
+R10-COMPARISON-EXPORT: {layer: backend, text: "Scenario estimates and unresolved issues remain visible in exports (R10)"}
+R11-ELIGIBILITY-STATUS: {layer: backend, text: "Candidate status Unconfirmed / Eligible / Ineligible with evidence (R11)"}
+R11-GRANDFATHER-SEPARATE: {layer: backend, text: "Existing-account grandfathering recorded separately from new enrollment eligibility (R11)"}
+R11-EVIDENCE-REQUIRED: {layer: backend, text: "Missing or conflicting eligibility evidence prevents ranking (R11)"}
+R11-CLOSED-EXISTING: {layer: backend, text: "Closed-to-new-business tariff requires documented existing eligibility for its permitted use (R11)"}
+R11-SCENARIO-VERSIONS: {layer: backend, text: "Baseline and edited scenarios saved; changed assumptions visible (R11)"}
+R12-COMPAT: {layer: backend, text: "Each determinant compatible with the candidate's definitions (R12)"}
+R12-TOU-FLAT: {layer: backend, text: "A flat monthly total cannot supply missing on-peak quantities; partial preserved (R12)"}
+R12-RANK-SCOPE: {layer: backend, text: "Rank only fully modeled, eligible candidates (R12)"}
+R12-CHEAPEST-LABEL: {layer: backend, text: "Cheapest label names scenario, horizon and candidate set (R12)"}
+R12-SCENARIO-ESTIMATE: {layer: backend, text: "User assumptions label the result as a scenario estimate (R12)"}
+R12-ANNUAL: {layer: backend, text: "Annual scenarios need 12 monthly inputs or approved forecast; single-month reuse needs visible approval (§6)"}
+R12-REFTEST-GATE: {layer: backend, text: "Candidate comparison enabled after its rules pass reference tests (§6)"}
+R12-PLANNED-SITE: {layer: backend, text: "Planned facilities support scenario analysis before invoices exist (§6)"}
+R12-BASELINE-DIFF: {layer: backend, text: "Modeled difference from a chosen baseline, commitments and unmodeled conditions shown (R12)"}
+R12-SIX-CANDIDATES: {layer: backend, text: "Six-candidate comparison in one scenario; candidate count configurable (§6)"}
+AT-REFCALC: {layer: backend, text: "§8 Reference calculation within configured tolerances; arithmetic and rounding tests pass"}
+AT-THRESHOLD: {layer: backend, text: "§8 Threshold boundary 100000/101000/101001/98999"}
+AT-ZERO-MISSING: {layer: backend, text: "§8 Zero and missing values"}
+AT-MISSING-RIDER-HISTORY: {layer: backend, text: "§8 Missing rider / history identified; only supported subtotals"}
+AT-DATES: {layer: backend, text: "§8 Dates and applicability (effective source, cross-version allocation, wrong utility/territory blocks)"}
+AT-PROVENANCE: {layer: backend, text: "§8 Quantity provenance (unverified label, billed demand unchecked, manual assumptions visible)"}
+AT-VERSIONING-EXPORTS: {layer: backend, text: "§8 Versioning and exports"}
+AT-COMPARISON-OFFSETS: {layer: backend, text: "§8 Comparison and offsets"}
+AT-PORTFOLIO-SETTINGS: {layer: backend, text: "§8 Portfolio and settings (20 facilities, six candidates, threshold/tolerance edits preserve assessments)"}
+REF-SEASONAL: {layer: backend, text: "Reference case: seasonal demand rule"}
+REF-DEMAND-BLOCK: {layer: backend, text: "Reference case: demand-dependent energy block"}
+REF-MINBILL: {layer: backend, text: "Reference case: minimum bill"}
+REF-VOLTAGE-LOSS: {layer: backend, text: "Reference case: voltage/loss adjustment"}
+REF-RATCHET: {layer: backend, text: "Reference case: historical ratchet"}
+REF-VARIABLE-RIDER: {layer: backend, text: "Reference case: variable rider"}
+REF-INELIGIBLE-NEW: {layer: backend, text: "Reference case: ineligible new-enrollment candidate"}
+REF-NEG-CREDIT: {layer: backend, text: "Reference case: negative credits"}
+REF-DUP-REVISED: {layer: backend, text: "Reference case: duplicate/revised bills"}
+REF-HELD-OUT: {layer: backend, text: "Reference case: held-out billing period after rule setup"}
+P-FIXED-LINEAR: {layer: backend, text: "§9.1 Fixed and linear charges (cents vs dollars, kW vs kWh, exact rates)"}
+P-TIERS: {layer: backend, text: "§9.1 Tiers and demand-linked blocks"}
+P-CALENDAR-CONDITIONAL: {layer: backend, text: "§9.1 Calendar and conditional rules"}
+P-HISTORY-FLOORS: {layer: backend, text: "§9.1 History and demand floors"}
+P-ADJUSTMENTS-MINIMUM: {layer: backend, text: "§9.1 Adjustments and minimum bills"}
+P-DEPENDENCIES-PRECEDENCE: {layer: backend, text: "§9.1 Dependencies and precedence"}
+TOL-RULE: {layer: backend, text: "§9.2 tolerance pass rule incl. ref zero, unset terms, overrides"}
+SRC-SNAPSHOT: {layer: backend, text: "§9.3 Mutable public URL requires a saved document snapshot"}
+SRC-EFFECTIVE-PERIOD: {layer: backend, text: "§9.3 Newer schedule applies only to its approved effective period"}
+SRC-SUMMARY-GOVERNING: {layer: backend, text: "§9.3 Conflicting summaries require the governing tariff and Michael's review"}
+SRC-COMPLETENESS: {layer: backend, text: "§9.3 Each dependency retains document/version, effective interval, page/cell, required inputs, support state"}
+PROC-SETTINGS-REUSE: {layer: backend, text: "§7 Settings-only changes reuse saved amounts and create a new assessment snapshot"}
+PROC-SAFE-RETRY: {layer: backend, text: "§7 Safe retries preserve uploads and avoid duplicate analyses"}
+PROC-DEPENDENCIES-FIRST: {layer: backend, text: "§7 Resolve dependency graph before numerical execution"}
+DOC-REQ-12MO: {layer: backend, text: "§2/§10 Request latest bill plus preceding 11 monthly bills"}
+DOC-REQ-TARIFF: {layer: backend, text: "§2 Additional input/document requests generated from each tariff"}
+PORT-QUEUE-FILTERS: {layer: backend, text: "§7 Portfolio queue filters by facility, utility, period, coverage, review state, threshold flag"}
+PORT-RESEARCH-SEPARATE: {layer: backend, text: "§7/§9 Public research candidates remain separately labeled until confirmed"}
+PORT-SCOPE-CLASS: {layer: backend, text: "§9 Host-site/supplier accounts visible with explicit scope classification"}
+PORT-AWAITING-SETUP: {layer: backend, text: "§7 Accounts awaiting setup shown alongside configured accounts"}
+REVIEW-STATES: {layer: backend, text: "§5 Draft -> Ready for review -> Reviewed; source changes new draft; findings independent"}
+REVIEW-ACK: {layer: backend, text: "§5 Partial coverage requires explicit acknowledgment"}
+REVIEW-LABEL: {layer: backend, text: "§5 Product labels preserve the precise scope of checks performed"}
+REVIEW-SCREEN: {layer: frontend, text: "§5 Main review screen answers the five questions"}
+DEMO-1: {layer: e2e, text: "§10.1 Facility/account list: legal entity, account, tariff, contract terms"}
+DEMO-2: {layer: e2e, text: "§10.1 Review a monthly invoice: quantities, clauses, riders/history, expected charge calculation"}
+DEMO-3: {layer: e2e, text: "§10.1 Explain a difference, action and evidence; capture recurring exception"}
+DEMO-4: {layer: e2e, text: "§10.1 Compare Florida candidates on the same scenario"}
+DEMO-5: {layer: e2e, text: "§10.1 Review rules, sources, reference results; set tolerances; save acceptance fixture"}
+COMPLETION-CHECKS: {layer: e2e, text: "§10.1 Engineering completion checks demonstrable"}

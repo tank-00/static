@@ -1,25 +1,26 @@
-# Utility Tariff Interpreter — Architecture Contract (MVP)
+# Utility Tariff Interpreter — Architecture Contract (MVP, v2)
 
 This document is the **binding technical contract** for every implementation step in `docs/PLAN.md`.
 Requirements come from `docs/PRD.md` (cited as `PRD §n` / `R01`–`R12`). If this document and the PRD
-disagree, the PRD wins and this document must be corrected in the same change.
+disagree, the PRD wins and this document must be corrected in the same change. v2 incorporates an
+adversarial review (PRD coverage, tariff-domain expressiveness, execution feasibility).
 
 ---
 
-## 0. Product summary (what we are building)
+## 0. Product summary
 
 A single-user web application for an energy manager (Michael) covering ~20 facilities that:
 
-1. Holds a facility/account workspace (R01) and ingests invoices, tariffs and rosters with
-   source-linked extraction and user confirmation (R02).
+1. Holds a facility/account workspace (R01) and ingests invoices, tariffs, rosters and billing summaries with
+   source-linked extraction and explicit user confirmation (R02).
 2. Stores tariffs as **structured, versioned, approved rule components** with exact source passages (R03, R04).
-3. Executes approved rules **deterministically** on invoice-reported quantities (R05), reconciles them
-   line-by-line against the bill (R06), flags differences against an editable 1% threshold (R07),
-   explains differences from evidence (R08), tracks findings (R09) and exports evidence (R10).
+3. Executes approved rules **deterministically** on invoice-reported quantities (R05), reconciles them line by
+   line against the bill (R06), flags differences against an editable 1% threshold (R07), explains differences
+   from evidence (R08), tracks findings (R09) and exports evidence (R10).
 4. Compares a bounded set of candidate tariffs on a common, explicit operating scenario (R11, R12).
 
-Non-goals for V1 (PRD §1 "Deferred"): interval-data reconstruction, automatic tariff discovery, rate-case
-monitoring, other commodities, procurement, enterprise integrations, multi-user administration, auth.
+Non-goals (PRD §1 "Deferred"): interval-data reconstruction, automatic tariff discovery, rate-case monitoring,
+other commodities, procurement, enterprise integrations, multi-user administration, authentication.
 
 ---
 
@@ -28,440 +29,751 @@ monitoring, other commodities, procurement, enterprise integrations, multi-user 
 | Layer | Choice | Notes |
 |---|---|---|
 | Language (backend) | Python 3.13 | `decimal.Decimal` for all money/quantities. |
-| Env / deps | `uv` (lockfile `backend/uv.lock`) | `uv sync`, `uv run ...` |
-| Web API | FastAPI + Pydantic v2 | JSON API under `/api/v1`. OpenAPI is the contract for the frontend. |
-| Persistence | SQLAlchemy 2.0 (typed ORM) + Alembic, SQLite (WAL, FK on) | Postgres-compatible schema; no SQLite-only SQL in app code. |
-| PDF text | `pdfplumber` | Page + line-level text with positions. Text-readable PDFs only (PRD R02). |
+| Env / deps | `uv` (lockfile `backend/uv.lock`) | `uv sync --locked`, `uv run ...` |
+| Web API | FastAPI + Pydantic v2 | JSON API under `/api/v1`; `FastAPI(separate_input_output_schemas=False)`. |
+| Persistence | SQLAlchemy 2.0 (typed ORM) + Alembic, SQLite (WAL, FK on) | Postgres-compatible schema. |
+| PDF text | `pdfplumber` | Page + line text with positions. Text-readable PDFs only (R02). |
 | Spreadsheets | `openpyxl` (XLSX), stdlib `csv` | |
-| Reports | Jinja2 HTML with print CSS | Printable evidence report (R10). |
-| Synthetic PDFs | `fpdf2` | Generates clearly-labeled synthetic invoices/tariffs for fixtures/demo. |
-| AI (optional) | `anthropic` SDK, model from `TARIFF_AI_MODEL` (default `claude-opus-5-5`) | Disabled when `ANTHROPIC_API_KEY` is unset. Always mocked in tests. |
-| Backend QA | pytest, hypothesis, pytest-cov, ruff (lint+format), mypy (strict for `tariff_engine`) | |
-| Frontend | Vite 8 + React 19 + TypeScript 5.9 (strict, `noUncheckedIndexedAccess`) | TS pinned to 5.9 for `openapi-typescript` compatibility. |
+| Reports | Jinja2 HTML with print CSS | Printable evidence reports (R10). |
+| Synthetic PDFs | `fpdf2` (built-in Helvetica, latin-1 text, fixed creation date) | Deterministic bytes. |
+| AI (optional) | `anthropic` SDK; model `TARIFF_AI_MODEL` (default `claude-opus-5-5`) | Disabled without `ANTHROPIC_API_KEY`; always mocked in tests. |
+| Backend QA | pytest (+`pytest-xdist`), hypothesis, pytest-cov, ruff, mypy (strict for `tariff_engine`) | |
+| Frontend | Vite 8 + React 19 + TypeScript 5.9 (strict, `noUncheckedIndexedAccess`) | TS pinned to 5.9 for `openapi-typescript`. |
 | Frontend data | TanStack Query v5, `openapi-fetch` + `openapi-typescript` generated types | No hand-written API types. |
-| Routing | `react-router` 7.x (pinned major; data router `createBrowserRouter`) | v8 exists but is avoided for API familiarity. |
+| Routing | `react-router` 7.x (data router `createBrowserRouter`) | |
 | Styling | Plain CSS with design tokens (CSS variables) | No CSS framework. |
 | Frontend QA | Vitest 5 + Testing Library + jsdom, oxlint (`--deny-warnings`), `tsc -b --noEmit` | |
-| E2E | `@playwright/test` 1.64 using preinstalled Chromium (`/opt/pw-browsers/chromium` when present; verified working) | Never run `playwright install` in cloud sessions. |
+| E2E | `@playwright/test` 1.64 with `executablePath=/opt/pw-browsers/chromium` when present | Never `playwright install` in cloud sessions. |
 
 ---
 
 ## 2. Repository layout
 
 ```
-/CLAUDE.md                     agent/developer rules (short)
-/Makefile                      canonical commands (see §12)
-/docs/PRD.md                   requirements (source of truth)
-/docs/ARCHITECTURE.md          this contract
-/docs/PLAN.md                  step-by-step execution plan
-/docs/requirements.yaml        requirement/acceptance IDs used by pytest markers (traceability)
-/docs/TRACEABILITY.md          generated requirement → tests matrix (S24)
+/CLAUDE.md  /Makefile  /README.md
+/docs/PRD.md ARCHITECTURE.md PLAN.md requirements.yaml TRACEABILITY.md(generated)
 /backend/
   pyproject.toml uv.lock alembic.ini
-  migrations/                  Alembic
-  src/tariff_engine/           PURE deterministic engine (no I/O, no DB, no web, no AI, no clock)
-  src/tariff_app/              FastAPI app, persistence, services, extraction, exports, seed
-  tests/engine/                engine unit + property tests
-  tests/app/                   service + API tests
-  tests/acceptance/            PRD §8 acceptance matrix + additional reference cases
-  tests/_probes/               (gitignored) scratch tests written by adversarial reviewers
-  fixtures/synthetic/          SYNTHETIC tariffs, reference cases, roster, scenario (JSON/CSV)
+  migrations/                     Alembic (one revision per step that changes schema: sNN_<area>)
+  src/tariff_engine/              PURE deterministic engine (no I/O, DB, web, AI, clock, randomness)
+  src/tariff_app/                 FastAPI app, persistence, services, extraction, exports, seed
+    api/ db/ models/ schemas/ services/ extraction/ synthetic/ reports/ seed/
+  tests/engine/ tests/app/ tests/acceptance/
+  tests/_probes/                  (gitignored; excluded from make check) adversarial scratch tests
+  fixtures/synthetic/             SYNTHETIC tariffs, packages, reference cases, roster, scenario, demo manifest
 /frontend/
-  package.json vite.config.ts tsconfig*.json .oxlintrc.json playwright.config.ts
-  src/api/                     generated `schema.d.ts` + client
-  src/app/ src/features/<area>/ src/components/ src/styles/
-  e2e/                         Playwright specs
-/.github/workflows/ci.yml
+  src/api/ (openapi.json, schema.d.ts, client.ts)  src/app/  src/features/<area>/  src/components/
+  src/lib/ (decimal.ts …)  src/test/ (setup.ts, mockApi.ts, render.tsx)  e2e/
 ```
 
 `tariff_engine` must never import `tariff_app`, SQLAlchemy, FastAPI, pdfplumber, anthropic, `datetime.now`,
-`random`, or `float` arithmetic. An engine test enforces this by AST inspection.
+`date.today`, `random`, `uuid`, `time`, or use `float`. An engine test enforces this by AST inspection.
 
 ---
 
 ## 3. Cross-cutting invariants (MUST hold everywhere)
 
 1. **Exact decimals.** Money, rates, quantities, thresholds and tolerances are `Decimal`. Never construct a
-   Decimal from a float; never store or transmit them as floats. JSON transports decimals as **strings**
-   (`"1234.5600"`). SQLite stores them as TEXT via the `DecimalText` type decorator (SQLite `NUMERIC`
-   would silently round-trip through float — forbidden).
+   Decimal from a float. Transport and storage use the canonical string form (§4.1). JSON numbers are
+   rejected where a decimal is expected (`422 decimal_must_be_string`).
 2. **Null means missing.** A missing value is `None`/`null`, never `0`. Zero is a real value.
-3. **Provenance on every value.** Every input/determinant carries `provenance ∈ {reported, derived, assumed,
-   manual}`, a semantic type, a unit, and (when it came from a document) a `source_ref_id`.
-   Invoice lines carry `provenance ∈ {extracted, corrected, manual}`.
-4. **Immutability + versioning.** Approved tariff versions, completed (reviewed) analyses, assessments,
-   reference runs and comparison runs are never mutated. Changes create new versions linked to their
-   predecessors. Corrections are append-only with reason and timestamp.
-5. **Determinism.** Identical versioned inputs → byte-identical engine results (stable ordering, no clock,
-   no randomness, no dict-order dependence, fixed Decimal context).
-6. **Separation of concerns the PRD insists on:** calculation coverage vs check scope vs review status vs
-   findings (PRD §2 "Readiness"); numerical tolerance vs investigation threshold (R08, §9.2); reported vs
-   derived determinants (R05); measured vs billed vs contract demand (R02); public research candidates vs
-   confirmed facilities (R01, §9); configuration coverage vs calculation coverage (R01).
-7. **AI proposes, user disposes.** AI output (extraction, rule drafts, explanation drafts) is a *proposal*
-   stored with status `awaiting_confirmation`; nothing AI-produced changes workflow state, approvals or
-   amounts without an explicit user action. Document text is evidence only; instructions inside documents
-   are never followed (prompt-injection safe). Every AI-proposed value must cite a source location whose
-   text actually contains it, or it is discarded.
-8. **Labels preserve scope.** Every result shows: `"Invoice-based check; underlying usage quantities
-   unverified"` (R05/§2), demand-determination status, coverage, and any assumptions. Display rounding is
-   labeled; threshold logic uses exact stored values.
-9. **Single user.** No auth in V1. The workspace user is "Michael Weizman"; finding owner is fixed to him.
-10. **Synthetic data is labeled.** Every synthetic tariff, invoice, roster row, reference case and scenario has
-    `is_synthetic = true` and visible "SYNTHETIC" labeling in UI and exports. Real public tariff values are
-    NOT encoded (sources are unavailable offline); synthetic tariffs only mirror the *patterns* of T1–T5.
+3. **Signed amounts.** Every USD amount (invoice lines, component values, totals) is signed by its effect on the
+   amount due: charges ≥ 0, credits/discounts/payments/balance credits < 0. A `role=credit` component must
+   evaluate ≤ 0 (else status `error`, code `credit_sign`). Extractors normalize `CR`, parentheses and trailing
+   minus to negative. All sums (percentage bases, minimum-bill comparisons, totals, groups, bridge) are signed.
+4. **Provenance on every value.** Inputs/determinants carry `provenance ∈ {reported, derived, assumed, manual}`,
+   a catalog semantic type, a unit, and a `source_ref_id` when document-backed. Invoice lines carry
+   `provenance ∈ {extracted, corrected, manual}`.
+5. **Immutability + versioning.** Content of approved tariff versions, approved package versions, analyses
+   (results/snapshots), assessments, reference runs and comparison runs never changes. Only lifecycle columns
+   (state, is_stale, stale_reasons, is_current) may change. Corrections are append-only with reason + timestamp.
+6. **Determinism.** Identical versioned inputs → byte-identical engine results (stable ordering, fixed Decimal
+   context, canonical JSON, no clock, no randomness).
+7. **PRD separations:** calculation coverage vs check scope vs review status vs findings; tolerance vs
+   investigation threshold; reported vs derived determinants; measured vs billed vs contract vs firm demand;
+   research candidates vs confirmed facilities; configuration coverage vs calculation coverage; new-enrollment
+   eligibility vs existing-account (grandfathered) eligibility; governing tariff vs summary.
+8. **AI proposes, user disposes.** AI output is a proposal (`awaiting_confirmation`); it never changes workflow
+   state, approvals or amounts without an explicit user action. Document text is evidence only — never follow
+   instructions in documents. Every AI-proposed value must cite a location whose text contains it, else dropped.
+9. **Labels preserve scope.** Results always show `"Invoice-based check; underlying usage quantities
+   unverified"`, demand-determination status, coverage, and assumptions. Display rounding is labeled; flags use
+   exact stored values. The word "Verified"/"Correct" is never used for a reviewed analysis; the label is
+   `"Reviewed — invoice-based rate-application check; coverage <c>; <n> open findings"`.
+10. **Single user.** No auth. Workspace user "Michael Weizman"; finding owner fixed to him.
+11. **Synthetic data is labeled.** Synthetic tariffs/invoices/roster rows/reference cases/scenarios have
+    `is_synthetic=true` and visible "SYNTHETIC" labels in UI and exports. Real public tariff values are not encoded
+    (sources unavailable offline); synthetic tariffs mirror the *patterns* of T1–T5 only.
 
 ---
 
-## 4. Calculation engine (`tariff_engine`) — contract
+## 4. Calculation engine (`tariff_engine`)
 
-### 4.1 Decimals and rounding (`decimals.py`)
-- `D(x: str | int | Decimal) -> Decimal`; raises `TypeError` for `float` and `bool`.
-- Fixed context: `prec=34`, `rounding=ROUND_HALF_EVEN` for intermediate math, traps on `InvalidOperation`,
-  `DivisionByZero`, `Overflow`. All engine arithmetic runs inside `engine_context()` (a `localcontext`).
-- `RoundingMode` enum: `HALF_UP, HALF_EVEN, DOWN, UP, CEILING, FLOOR` → mapped to `decimal` constants.
-- `quantize(value, places: int, mode)`; places may be negative only if explicitly allowed (not needed).
+### 4.0 Dates (`dates.py`)
+- `period_start` and `period_end` are **inclusive** service dates. `billing_days` = reported input
+  `billing_days` when present (provenance reported), else computed with the account's `day_count_convention`
+  (`inclusive` default: `(end − start).days + 1`; `read_to_read`: `(end − start).days`).
+- `billing_month` (`"YYYY-MM"`) is the utility billing month confirmed on the invoice (extractor proposes the
+  printed billing month, else the month of `period_end`). It drives seasons, `by_period` factors, lookback windows.
+- Version effective intervals are **half-open** `[effective_from, effective_to)`.
+- Month arithmetic helpers: `month_add("2026-07", -11) == "2025-08"`, `months_between`, `month_days`.
+- Comparison month `M`: `period_start` = first day, `period_end` = last day, `billing_days` = calendar days.
+
+### 4.1 Decimals, canonical forms (`decimals.py`)
+- `D(x: str | int | Decimal) -> Decimal`; raises `TypeError` for `float`/`bool`.
+- `engine_context()`: `localcontext` with `prec=34`, `rounding=ROUND_HALF_EVEN`, traps `InvalidOperation`,
+  `DivisionByZero`, `Overflow`. All engine arithmetic runs inside it.
+- `RoundingMode` enum `HALF_UP, HALF_EVEN, DOWN, UP, CEILING, FLOOR`; `quantize(value, places, mode)`.
+  Rounding quantizes the **canonical-unit magnitude** (USD, kW, kW·h, h, dimensionless): `places=5` on a
+  `USD/kWh` rate means 0.001 cents.
+- `canonical_str(d)`: `format(d, "f")`, never exponent notation, `-0` rendered as `0` at the same scale.
+- `DecimalStr = Annotated[Decimal, BeforeValidator(accept str|int, reject float/bool → "decimal_must_be_string"),
+  PlainSerializer(canonical_str, return_type=str, when_used="json"), WithJsonSchema({"type":"string",
+  "pattern":"^-?\\d+(\\.\\d+)?$"})]`. Every engine model and API model uses `DecimalStr`.
+- `canonical_json(obj) = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)` over
+  `model_dump(mode="json")` output; the **only** input to fingerprints/content hashes (sha256).
 
 ### 4.2 Units (`units.py`)
-Dimensional algebra over base symbols: `USD`, `kW`, `h`, `day`, `kV`. A `Unit` is an immutable, canonical,
-sorted mapping symbol→exponent; dimensionless is `Unit({})`.
-- Parsed aliases (with scale to canonical value):
-  `USD`, `$` (1 USD); `cents`, `¢` (0.01 USD); `kW`, `kVA`, `kVAR`, `kvar` (1 kW — same dimension, label
-  retained for display; semantic distinction is carried by determinant `semantic_type`, not the unit);
-  `MW` (1000 kW); `kWh`, `kVAh`, `kvarh`, `kVARh` (1 kW·h); `MWh` (1000 kW·h); `h`, `hour`, `hours` (1 h);
-  `day`, `days`; `kV`; `%`, `percent` (0.01, dimensionless); `1` / `` (dimensionless).
-  Compound units with `/` and `*` (e.g. `USD/kWh`, `cents/kWh`, `USD/kW`, `USD/day`, `kWh/kW`).
-- `parse_unit(text) -> (Unit, scale: Decimal)`; `Quantity(value: Decimal, unit: Unit, label: str)`.
-  Values are normalized to canonical scale on construction from a unit string (e.g. `6.912 cents/kWh` →
-  `0.06912 USD/kWh`) while `label` keeps the original text for display/trace.
-- `+`, `-`, `min`, `max`, comparisons require identical `Unit` → else `UnitError` naming both units.
-  `*`, `/` combine units. Dividing by zero raises `CalcError`.
-- A charge component's final unit must be `USD`; a determinant's must equal its declared `output_unit`.
+Dimensional algebra over base symbols `USD, kW, kVAR, kVA, h, day, kV`. A `Unit` is an immutable canonical
+mapping symbol→exponent; dimensionless is `Unit({})`.
+- Aliases (scale to canonical): `USD`,`$` (1); `cents`,`¢` (0.01 USD); `mills` (0.001 USD); `kW`; `MW` (1000 kW);
+  `kVAR`,`kvar`,`kVAr` (kVAR); `kVA`; `kWh` (kW·h); `MWh` (1000 kW·h); `kVARh`,`kvarh` (kVAR·h); `kVAh` (kVA·h);
+  `h`,`hour`,`hours`; `day`,`days`; `kV`; `%`,`percent` (0.01, dimensionless); `1`/`""` (dimensionless).
+  Compound with `/` and `*` (`USD/kWh`, `cents/kWh`, `USD/kW`, `USD/kVAR`, `USD/day`, `kWh/kW`).
+- `parse_unit(text) -> (Unit, scale)`; `Quantity(value, unit, label)` normalizes to canonical scale on
+  construction from a unit string (`6.912 cents/kWh` → `0.06912 USD/kWh`) and keeps `label` for display/trace.
+- `+ − min max` and comparisons need identical units → `UnitError` naming both. **Exception:** the literal `0`
+  is unit-polymorphic in `+ − min max` and comparisons. `* /` combine units; divide by zero → `CalcError`.
+- Reactive/apparent power are distinct dimensions. Explicit conversions only via functions (§4.3):
+  `power_factor(p, q)`, `apparent(p, q)`, `as_reactive_equiv(x_kW)`.
+- A charge/credit component's unit must be `USD`; a determinant's must equal its `output_unit`.
 
 ### 4.3 Expression language (`expressions.py`)
-Safe formulas parsed with Python `ast` in `mode="eval"` and a strict node whitelist. **Never `eval`.**
-- Numbers: literal text is converted with `Decimal(source_segment)` (never via the float `ast.Constant`
-  value). Literals are dimensionless; units via `q("200", "h")` / `q(200, "h")`.
-- Names resolve to (in order, collisions rejected at validation): built-ins (`billing_month` int 1–12,
-  `billing_days` [day], `period_year` int), component keys, parameters, inputs.
-- Operators: `+ - * /`, unary `-`, comparisons (`< <= > >= == !=`, chained OK), `and or not`,
-  conditional `a if cond else b`. Disallowed: `**`, attributes, subscripts, lambdas, comprehensions,
-  f-strings, starred args, keyword args (except none), any call not in the whitelist.
-- Functions: `min(a, b, ...)`, `max(a, b, ...)`, `abs(x)`, `round_to(x, places)` (HALF_UP),
-  `ceil(x)`, `floor(x)` (dimensionless or same unit), `sqrt(x)` (dimensionless or unit with even exponents),
-  `q(number, "unit")`, `in_months(m1, m2, ...)` → bool for `billing_month`.
-- API: `parse_expression(src) -> Expr` (raises `ExpressionError` with position), `referenced_names(expr)
-  -> frozenset[str]`, `evaluate(expr, env) -> Quantity | bool`. A name bound to a missing input raises
-  `MissingInputError(name)`. Source length ≤ 2,000 chars; AST depth ≤ 50.
+Safe formulas parsed with `ast.parse(mode="eval")` and a strict node whitelist. **Never `eval`.**
+- Numbers: literal **source text** → `Decimal(text)` (never the float value of `ast.Constant`). Literals are
+  dimensionless (except unit-polymorphic `0`); units via `q("200", "h")` or `q(200, "h")`.
+- Names: built-ins (`billing_month` int, `billing_days` [day], `days_in_billing_month` [day], `period_year` int),
+  then names resolved by the package resolver (§4.6). Dotted names are not allowed.
+- Operators: `+ - * /`, unary `-`, comparisons (chains OK), `and or not`, `a if cond else b`.
+  Disallowed: `**`, attributes, subscripts, lambdas, comprehensions, f-strings, starred/keyword args, other calls.
+- Functions: `min(...)`, `max(...)`, `abs(x)`, `round_to(x, places[, "MODE"])` (default `"HALF_UP"`),
+  `ceil(x)`, `floor(x)`, `sqrt(x)`, `q(number, "unit")`, `in_months(m1, ...)` (bool on billing month),
+  `power_factor(p, q)` (p in kW or kW·h, q in kVAR or kVAR·h, same h exponent → dimensionless `p/sqrt(p²+q²)`),
+  `apparent(p, q)` (→ kVA or kVA·h), `as_reactive_equiv(x)` (kW→kVAR, kW·h→kVAR·h; same magnitude; traced).
+- API: `parse_expression(src) -> Expr` (raises `ExpressionError` with position), `referenced_names(expr)`
+  (excludes functions/built-ins), `evaluate(expr, env) -> Quantity | bool`. Missing input → `MissingInputError
+  (name)`. Limits: source ≤ 2,000 chars, AST depth ≤ 50.
 
-### 4.4 Rule model (`model.py`, Pydantic v2, frozen; decimals as strings in JSON)
+### 4.4 Determinant catalog (`catalog.py`, pure data)
+`CATALOG: dict[str, CatalogEntry{key, semantic_type, unit, series_capable, shared_compatible,
+requires_definition_id, typical_source: invoice|account_fact|billing_summary|scenario, invoice_label_aliases}]`.
+
+| key | semantic_type | unit | series | shared | def_id | source |
+|---|---|---|---|---|---|---|
+| `energy_kwh` | energy.total | kWh | ✓ | ✓ | – | invoice |
+| `energy_on_peak_kwh` / `energy_off_peak_kwh` / `energy_shoulder_kwh` | energy.tou.on_peak / off_peak / shoulder | kWh | ✓ | ✓ (only if same definition_id) | required | invoice |
+| `demand_measured_kw` | demand.measured | kW | ✓ | ✓ | optional (interval) | invoice |
+| `demand_on_peak_measured_kw` | demand.measured.on_peak | kW | ✓ | ✓ (same def) | required | invoice |
+| `demand_billed_kw` | demand.billed | kW | ✓ | ✗ | – | invoice |
+| `demand_contract_kw` | demand.contract | kW | – | ✗ | – | account_fact |
+| `demand_firm_kw` | demand.firm | kW | ✓ | ✗ | – | account_fact |
+| `demand_historical_max_kw` | demand.historical_max | kW | – | ✗ | – | billing_summary (period = as-of month) |
+| `reactive_demand_kvar` | reactive.demand | kVAR | ✓ | ✓ | – | invoice |
+| `reactive_energy_kvarh` | reactive.energy | kVARh | ✓ | ✓ | – | invoice |
+| `power_factor` | power_factor | 1 (fraction; `%` inputs normalized) | ✓ | ✓ | – | invoice |
+| `service_voltage_kv` | service.voltage | kV | – | ✓ | – | account_fact |
+| `billing_days` | period.days | day | – | – | – | invoice |
+
+Rules: tariff-specific determinants use the prefix `x_<schedule_code_lower>_` and are never shared. Component
+keys may not equal catalog keys (the derived billing demand component is `billing_demand_kw`). Extractors map
+invoice labels to keys only through `invoice_label_aliases` (unknown labels → warnings, never new keys). A
+meta-test asserts every determinant key used in `fixtures/synthetic/**` is in the catalog or `x_`-prefixed.
+
+### 4.5 Rule model (`model.py`, Pydantic v2, frozen, decimals as `DecimalStr`)
 ```text
-ParameterDef   { name, unit, value: str|None, by_period: {"YYYY-MM": str}|None, description, source_refs: [str] }
-               # by_period = monthly adjustment factors (variable riders). value XOR by_period.
-DeterminantDef { key, semantic_type, unit, description, shared_compatible: bool, is_series: bool }
+ParameterDef   { name, unit, value|None, by_period: {"YYYY-MM": dec}|None, scope: version|package (default version),
+                 unresolved: bool=false, unresolved_note|None, description, source_refs: [str] }
+               # exactly one of value/by_period unless unresolved=true (then both null)
+DeterminantDef { key, semantic_type, unit, definition_id|None, description }   # validated against catalog
 Rounding       { places: int, mode: RoundingMode }
-Applicability  { months: [1..12]|None, condition: expr|None }   # evaluated against billing month/inputs
-Fallback       { input: str, scope_tag: str, label: str }      # e.g. billed_demand_kw when derivation impossible
+Applicability  { months: [1..12]|None, condition: expr|None }
+Fallback       { input: catalog key, scope_tag: str, label: str }   # role=determinant only; unit = output_unit
+BaseSelector   = [component_key] | { roles: [charge|credit], exclude: [component_key] }
 Calc (discriminated on `type`):
-  fixed       { amount: expr }                                    → USD
-  rate        { rate: expr, quantity: expr }                      → rate × quantity (unit-checked)
-  tiered      { quantity: expr, tiers: [{ size: expr|null, rate: expr }], round_each_tier: Rounding|None }
-              # progressive bands; size=null only on the final tier (open-ended); sizes may reference
-              # determinants (e.g. q(200,"h") * billing_demand_kw → demand-linked kWh blocks)
-  formula     { expr }                                            → any unit (determinants, custom)
-  percentage  { base: [component_key], rate: expr(dimensionless) }→ rate × Σ base (explicit base)
-  minimum_bill{ floor: expr(USD), against: [component_key] }      → max(0, floor − Σ against)
-  lookback    { series: input_key, window_months: int, include_current: bool, months_filter: [int]|None,
-                aggregate: "max"|"min", min_points: int, baseline_input: input_key|None }
-              # historical maxima/ratchets; baseline_input = documented all-time/firm peak (T2)
-ComponentDef   { key, name, role: charge|credit|determinant|subtotal, calc, output_unit,
-                 rounding|None, applicability|None, fallback|None, check_scope_tag|None,
-                 support_state: supported|awaiting_implementation, invoice_labels: [str],
-                 source_refs: [str], depends_on: [component_key], notes }
+  fixed        { amount: expr }                                      → USD
+  rate         { rate: expr, quantity: expr }                        → rate × quantity (unit-checked)
+  tiered       { quantity: expr, tiers: [Tier], round_each_tier: Rounding|None }
+     Tier      { size: expr|None, rate: expr|None, subtiers: [{ size: expr|None, rate: expr }]|None }
+               # exactly one of rate/subtiers; size=None only on the last tier/subtier (open-ended);
+               # sizes may reference determinants (q(200,"h") * billing_demand_kw → kWh); a band's quantity is
+               # spread over its subtiers from zero; size<0 or quantity<0 → error negative_tier_quantity
+  formula      { expr }
+  percentage   { base: BaseSelector, rate: expr(dimensionless) }      → rate × Σ base (signed)
+  minimum_bill { floor: expr(USD), against: BaseSelector }            → max(0, floor − Σ against)
+  lookback     { series: catalog key | None, series_expr: expr | None,   # exactly one
+                 window: { months_back: int≥1, include_current: bool } | { since_baseline: true },
+                 months_filter: [1..12]|None, aggregate: max|min|mean|sum,
+                 completeness: "all_months" | { min_points: int, approval_note: str },
+                 baseline: { input: catalog key }|None }               # baseline InputValue.period = as-of month
+ComponentDef   { key, name, role: charge|credit|determinant|subtotal, calc, output_unit, rounding|None,
+                 applicability|None, fallback|None, check_scope_tag|None,
+                 support_state: supported|awaiting_input|awaiting_implementation, support_note|None,
+                 invoice_labels: [str], source_refs: [str], depends_on: [component_key],
+                 publishes_series: catalog key|None, notes }
+ExternalRef    { name, kind: component|parameter|determinant, unit }
 TariffVersionDef { schedule_code, schedule_kind: base|rider|factor_table|service_rule|amendment,
-                 utility_legal_entity, service_territory, version_label, effective_from, effective_to|None,
-                 parameters: [ParameterDef], determinants: [DeterminantDef], components: [ComponentDef] }
-PackageMember  { version: TariffVersionDef, role: base|rider|factor_table|service_rule|amendment,
-                 precedence: int, overrides: [{ component_key, reason }] }
-PackageDef     { package_id, members: [PackageMember] }
+                 utility_legal_entity, service_territory, version_label, version_ref|None (opaque app id),
+                 effective_from, effective_to|None, effective_basis: service_dates|billing_month|statement_date,
+                 parameters, determinants, components, external_refs }
+PackageMember  { schedule_code, role, precedence: int (higher wins), member_from: date, member_to: date|None,
+                 versions: [TariffVersionDef] (sorted, non-overlapping), missing: MissingSource|None,
+                 overrides: [{ kind: component|parameter, key, target_schedule|None, reason }] }
+MissingSource  { reason: "no_approved_version_for_period", provides: [name] }
+PackageDef     { package_ref, members: [PackageMember] }
 ```
-`validate_version(v)` / `validate_package(p)` return a list of `ValidationIssue{severity, code, path, message}`:
-unknown names, duplicate keys without an override reason, open tier not last, non-USD charge output, cycles
-(with the cycle path), unit errors detectable from declared units, `by_period` keys malformed, roles
-inconsistent. A version with `error` issues cannot be approved.
+Lookback semantics: window months = `billing_month − months_back … billing_month − 1` (calendar), plus
+`billing_month` if `include_current`; `since_baseline` = every month after the baseline's as-of month through
+`billing_month − 1`. Required months = window months whose month number ∈ `months_filter` (all if null).
+`all_months`: every required month must have a non-null series value, else `missing_input` with **one
+InputRequest per missing month**. `min_points` relaxation adds check-scope note "ratchet history incomplete:
+k of n months" and forces `demand_determination=unchecked`. The baseline value joins the aggregate.
+`series_expr` is evaluated per required month using only that month's series determinants and parameters
+(`by_period` resolved for that month); referencing components or nested lookbacks → validation error
+`recursive_lookback`. A ratchet on prior **billing** demand uses the reported `demand_billed_kw` series; the
+engine never recomputes prior months' billing demand recursively (comparison uses `publishes_series`, §4.10).
 
-### 4.5 Calculation (`calculator.py`)
+Validation (`validate_version`, `validate_package`) returns `ValidationIssue{severity: error|warning, code, path,
+message}`. Codes include: `unknown_name` (undeclared external), `unresolved_external_ref`,
+`external_ref_unit_mismatch`, `duplicate_key`, `override_without_reason`, `equal_precedence_collision`,
+`open_tier_not_last`, `tier_rate_xor_subtiers`, `charge_not_usd`, `credit_role_requires_nonpositive` (static
+when detectable), `cycle` (with path), `unit_mismatch`, `by_period_key_format`, `parameter_value_xor`,
+`unknown_determinant`, `determinant_catalog_mismatch`, `definition_id_required`, `fallback_not_determinant`,
+`fallback_unit_mismatch`, `recursive_lookback`, `component_key_is_catalog_key`, `overlapping_versions`,
+`percent_out_of_range` (warning), `unresolved_parameter` (warning — version stays approvable; component reports
+`missing_source`). Versions with `error` issues cannot be approved.
+
+### 4.6 Package merge & name resolution (`package.py`)
+- Component keys and determinant keys are **package-global**; parameters are **version-scoped** unless
+  `scope=package` (e.g. factor tables export monthly factors).
+- Name resolution inside an expression of version V: built-ins → V's parameters → package-scoped parameters →
+  component keys → determinants/inputs. Names V uses but does not define must be declared in
+  `V.external_refs` (kind + unit) and resolve to exactly one merged definition of that kind and unit.
+- Collisions: component keys across members, package-scoped parameters across members, and a determinant
+  declared with different semantic_type/unit/definition_id are errors unless an `override` (higher precedence,
+  with reason) resolves them. An amendment overriding a base parameter names `target_schedule`. The trace records
+  every applied override with its reason.
+- `BaseSelector` with roles resolves at merge into an explicit sorted key list (recorded in trace and graph);
+  `validate_package` warns on charge components neither selected nor excluded by any `{roles, exclude}` selector.
+- Dependency graph = referenced names + selectors + `depends_on`; deterministic topological order (key-sorted
+  tie-break); cycles → error with path.
+
+### 4.7 Calculation (`calculator.py`)
 ```text
-InputValue   { key, semantic_type, value: Decimal|None, unit, provenance, source_ref|None, period: "YYYY-MM"|None }
-CalcContext  { period_start, period_end, billing_month: "YYYY-MM", account_entity, account_territory,
-               inputs: {key: InputValue}, series: {key: {"YYYY-MM": InputValue}} }
-calculate(package: PackageDef, ctx: CalcContext, allocation: "none"|"prorate_by_days" = "none") -> CalculationResult
+InputValue  { key, semantic_type, value: DecimalStr|None, unit, provenance, source_ref|None, period|None,
+              definition_id|None, note|None }
+CalcContext { period_start, period_end, billing_month, statement_date|None, billing_days|None (reported),
+              day_count_convention, account_entity, account_territory,
+              inputs: {key: InputValue}, series: {key: {"YYYY-MM": InputValue}} }
+calculate(package, ctx, allocation: none|prorate_by_days = none) -> CalculationResult
 ```
-Algorithm (all deterministic):
-1. **Applicability of sources:** each member version's `utility_legal_entity`/`service_territory` must
-   equal the account's → else coverage `blocked` with `wrong_utility_or_territory` (PRD §8 "Dates and
-   applicability"). Versions must be effective for the billing period. If a period straddles two versions of
-   the same schedule, run once per version and combine each component by day-weight **only** when
-   `allocation="prorate_by_days"`; otherwise those components are `blocked` with an input request
-   "approve an allocation rule for <schedule> <v1>/<v2>".
-2. **Merge** members by precedence; amendment/rider components replace base components only when an
-   `override` with a reason exists; otherwise duplicate keys are a validation error.
-3. **Graph:** dependencies = referenced names in all expressions + `percentage.base` + `minimum_bill.against`
-   + `depends_on`. Topological order with key-sorted tie-breaking. Cycles → validation error.
-4. **Evaluate each component** in order:
-   - `support_state=awaiting_implementation` → status `unsupported` (counts as uncovered).
-   - applicability false → `not_applicable` (value `0 USD`, excluded from uncovered).
-   - any dependency not calculated → `blocked` (lists blocking keys).
-   - a needed input is null/absent or a `by_period` factor is missing for the billing month, or lookback has
-     < `min_points` → `missing_input` with specific `InputRequest{key, semantic_type, period|None,
-     description, needed_by: [component_key], document_hint}`.
-     If the component has a `fallback` and that input is present → status `calculated`, `fallback_used=true`,
-     value = fallback input; adds check-scope note (e.g. demand determination **unchecked**).
-   - arithmetic/unit failure → `error` with message.
-   - otherwise `calculated`: compute raw value, apply `rounding` (if any) → value. Keep `raw_value`.
-   Each result records a `trace` (ordered steps: expression text, substituted values with units, tier
-   allocations with per-tier quantity/rate/subtotal, lookback points considered), `used_inputs` with
-   provenance and source refs, `used_parameters`, `source_refs`, `schedule_code`, `version_label`.
-5. **Coverage:** consider applicable components with role `charge|credit`. `complete` = all `calculated`;
-   `blocked` = none calculated or a structural block; else `partial`. `expected_total` = Σ charge/credit
-   values **only if complete**; `supported_subtotal` = Σ calculated charge/credit values always;
-   `uncovered` = keys not calculated (with status and reason).
-6. **Check scope:** `{ notice: "Invoice-based check; underlying usage quantities unverified",
-   demand_determination: checked|unchecked|not_applicable, notes: [...] }`. `unchecked` when any component
-   tagged `check_scope_tag="demand_determination"` used its fallback (billed demand); `checked` when such
-   components were derived from measured demand + sufficient history.
-7. `CalculationResult { engine_version, billing_month, components: [ComponentResult], coverage,
-   expected_total|None, supported_subtotal, uncovered, input_requests (deduped, sorted), check_scope,
-   blocking_issues }` — fully JSON-serializable (`model_dump(mode="json")`), stable ordering.
-
-### 4.6 Reconciliation & assessment (`reconcile.py`)
+1. **Source applicability.** Every member version's entity/territory must equal the account's → else coverage
+   `blocked`, issue `wrong_utility_or_territory`. Members whose `[member_from, member_to)` does not intersect the
+   period are dropped. Per member select versions: `billing_month` basis → the version containing the first day of
+   `billing_month`; `statement_date` basis → the version containing the statement date; `service_dates` basis →
+   all versions covering ≥1 service day. No version, or `missing` set → every component that (transitively)
+   references a name in `missing.provides` is `missing_source` with `InputRequest{kind: source_version, key:
+   schedule_code, period, document_hint: "D03"}`; others still calculate.
+2. **Segments.** For `service_dates` members, split the period at every effective boundary; run the merged package
+   once per segment. With `prorate_by_days`, each charge/credit value = `quantize(Σ value_seg × days_seg /
+   billing_days, rounding)`; determinants/subtotals are not weighted (shown per segment in trace); tier sizes are
+   not prorated. With `none`, every component of a straddling schedule and its dependents is `blocked` with
+   `InputRequest{kind: allocation_rule}`.
+3. **Merge & graph** per §4.6.
+4. **Evaluate each component** in topological order:
+   (a) `awaiting_implementation` → `unsupported`; `awaiting_input` → `missing_source` (request kind `document`);
+   (b) applicability false → `not_applicable`, value `0` in its output unit;
+   (c) primary status: `blocked` if a dependency is not calculated (not_applicable counts as calculated);
+       `missing_source` if it uses an unresolved parameter (request kind `unresolved_term`) or a missing-source
+       name; `missing_input` if a needed input is null/absent, a `by_period` factor lacks the billing month
+       (request kind `factor`), or a lookback is incomplete (kind `history`, one per month);
+   (d) **fallback**: if the primary status is `missing_input`, or `blocked` only by dependencies whose root causes
+       are all `missing_input`, and the component has a `fallback` whose input is present with unit =
+       output_unit → `calculated`, `fallback_used=true`, value = rounding(fallback input), trace records the
+       bypassed reason; the bypassed InputRequests are still emitted with `blocking=false,
+       satisfied_by_fallback=<key>`. Never for `error`, `unsupported`, `missing_source`, territory or allocation.
+   (e) arithmetic/unit failure → `error` with message; credit sign violation → `error` `credit_sign`.
+   (f) else `calculated`: `value = quantize(raw_value, rounding)` if rounding else `raw_value`. With
+       `round_each_tier`, each tier subtotal is quantized and `raw_value = Σ` quantized tiers, then component
+       rounding applies. **Every downstream reference uses `value`** (expressions, tier sizes, bases, minimum bill,
+       reconciliation, flags, totals, reference classification); `raw_value` is for trace only.
+   Each result records `trace` (expression text, substituted values with units, tier/subtier allocations, lookback
+   months and values, overrides applied, conversions), `used_inputs` (with provenance and source refs),
+   `used_parameters`, `source_refs`, `schedule_code`, `version_label`, `version_ref`, per-segment values.
+5. **Coverage (calc):** applicable `charge|credit` components: `complete` = all calculated; `blocked` = structural
+   block or none calculated; else `partial`. `expected_total` = Σ charge/credit values only if complete;
+   `supported_subtotal` = Σ calculated charge/credit values; `uncovered` = `[{key, status, reason}]`.
+6. **Check scope:** `{notice: "Invoice-based check; underlying usage quantities unverified",
+   demand_determination: not_applicable | checked | unchecked, reasons: [...], notes: [...]}`;
+   `not_applicable` if no applicable component has `check_scope_tag="demand_determination"`; `checked` iff every
+   such component is calculated with `fallback_used=false` and no min_points relaxation; else `unchecked`.
+7. **Result:**
 ```text
-InvoiceLineIn { id, label, amount: Decimal|None, category: current_charge|balance_item|informational,
-                balance_type: prior_balance|payment|balance_credit|late_charge|other|None,
-                quantity|None, quantity_unit|None, rate|None, rate_unit|None, source_ref|None,
-                out_of_scope_reason|None }
-MappingGroup  { group_key, line_ids: [str], component_keys: [str] }   # supports one-to-many / many-to-one
+InputRequest { kind: determinant|history|factor|contract_term|source_version|allocation_rule|unresolved_term|document,
+               key, semantic_type|None, period|None, description, needed_by: [key], blocking: bool,
+               satisfied_by_fallback|None, document_hint: D01..D08|None }
+ComponentResult { key, name, role, status: calculated|not_applicable|missing_input|missing_source|blocked|
+               unsupported|error, value|None, raw_value|None, unit, fallback_used, bypassed_reason|None,
+               blocking_keys, trace, used_inputs, used_parameters, source_refs, input_requests, message|None,
+               schedule_code, version_label, version_ref|None, segment_values }
+CalculationResult { engine_version, billing_month, period_start, period_end, billing_days, segments,
+               resolved_versions: [{schedule_code, version_label, version_ref}], components, coverage,
+               expected_total|None, supported_subtotal, uncovered, input_requests (deduped, sorted), check_scope,
+               assumptions: [InputValue with provenance assumed|manual], blocking_issues, warnings }
+```
+All engine models evolve **additively only** so stored results stay readable.
+
+### 4.8 Reconciliation, assessment & reference classification (`reconcile.py`)
+```text
+InvoiceLineIn { id, line_no, label, amount|None, category: current_charge|balance_item|informational,
+                balance_type: prior_balance|payment|balance_credit|late_charge|prior_period_adjustment|other|None,
+                quantity|None, quantity_unit|None, rate|None, rate_unit|None, source_ref|None, out_of_scope_reason|None }
+MappingGroup  { line_ids: [str], component_keys: [str], reviewed: bool }
 reconcile(calc, lines, groups, stated_amount_due|None) -> Reconciliation
-assess(reconciliation, threshold: Decimal) -> AssessmentResult
+assess(reconciliation, threshold) -> AssessmentResult
 ```
-- For each group: `billed = Σ line amounts` (None if any is None), `expected = Σ component values` (None
-  if any mapped component is not calculated/not applicable-with-value), `difference = billed − expected`
-  (signed; R06), `pct = difference / |expected|` when `expected ≠ 0`, else `None` (no denominator).
-- Row statuses: `compared`, `expected_missing` (coverage gap — never treated as zero), `billed_missing`,
-  `unmapped_line` (current charge with no component and no out-of-scope reason), `not_billed` (calculated
-  non-zero component with no line → billed treated as 0 **only** for components with an explicit mapping
-  absence; reported as its own status), `out_of_scope` (line explicitly classified, with reason).
-- **Flag rule (exact Decimals, no rounding):** `expected == 0 and billed == 0` → matched;
-  `expected == 0 and billed ≠ 0` → flagged (`requires_review_zero_expected`); else flagged iff
-  `|pct| > threshold` (strictly greater: exactly 1% is within threshold). Both directions. Rows without an
-  expected value are **not** flagged but listed as coverage gaps.
-- **Totals:** `comparable_billed_total` = Σ current_charge lines (in scope); `expected_total` from calc only if
-  coverage complete **and** no unmapped current-charge lines; total flagged by the same rule. Partial →
-  show `supported_subtotal` and the billed amount of covered groups, never a full expected total.
-- **Balance bridge** (separate from comparable charges): prior balance, payments, balance credits, late
-  charges, other → `computed_amount_due = Σ balance items + comparable_billed_total`; compare to stated
-  amount due; report `bridge_difference`.
-- Offsetting differences are always shown per row even when the net is zero (PRD §8 "Comparison and
-  offsets").
-- `classify_reference(calculated, reference, abs_tol|None, rel_tol|None) -> pass|fail|pending` (PRD §9.2):
-  pass iff `|calc − ref| ≤ max(abs_tol, rel_tol × |ref|)`, omitting unset terms; at `ref == 0` use only the
-  absolute term; when the applicable term(s) are unset → `pending` ("Reference validation pending").
+- **Group validity:** each line id and each charge/credit component key appears in at most one group
+  (`ReconcileError double_mapped`). `group_key = "c:" + "+".join(sorted(component_keys))` when the group has
+  components, else `"l:" + lowercase-whitespace-collapsed label of its lowest line_no` (stable across reruns and
+  revised invoices). A group with ≥2 lines and ≥2 components is `coarse` (warning).
+- **Group values:** `expected = Σ` contributions (calculated → value, not_applicable → exact `0`); any other
+  component status → `expected = None` (row `expected_missing`, lists keys). `billed = Σ` line amounts; any null →
+  `None` (row `billed_missing`); no lines → `0`.
+- **Rows:** every group yields one row; additionally every applicable calculated charge/credit component with
+  value ≠ 0 in no group yields a `not_billed` row (billed 0); uncovered components in no group yield
+  `expected_missing` rows; calculated zero / not_applicable components in no group yield no row; in-scope
+  current-charge lines in no group yield `unmapped_line` rows (expected None); lines with `out_of_scope_reason`
+  yield `out_of_scope` rows (not compared). Row statuses: `compared, not_billed, expected_missing,
+  billed_missing, unmapped_line, out_of_scope`. Rows carry `mapping_reviewed`, `coarse`, and `check_scope_notes`
+  from their components (fallback used, assumed inputs, demand determination unchecked).
+- **Difference & pct:** `difference = billed − expected` (signed) when both present; `pct = difference /
+  |expected|` for display/export only, `None` when expected is 0 or either side is None.
+- **Reconciliation coverage:** `blocked` if calc blocked; `complete` iff calc complete ∧ no row in
+  {`expected_missing`, `billed_missing`, `unmapped_line`} ∧ every group reviewed ∧ every in-scope current-charge
+  amount non-null; else `partial`. `uncovered` = calc uncovered ∪ such rows (with reason). **This is the
+  coverage shown everywhere** (UI, queue, exports, readiness); calc coverage is stored separately.
+- **Totals:** `comparable_billed_total` = Σ in-scope current-charge amounts (None if any null);
+  `expected_total` = calc expected_total only when reconciliation coverage is complete; `total_difference`;
+  `covered_expected_subtotal`, `covered_billed_subtotal`, `covered_difference` over rows with status ∈
+  {`compared`, `not_billed`} (shown, never flagged); `supported_subtotal` (label "calculated components,
+  including those not separately comparable"); `calculated_not_comparable` (calculated components inside
+  `expected_missing` groups); `out_of_scope_total`.
+- **Balance bridge:** `computed_amount_due = Σ all current_charge amounts (in-scope + out_of_scope) + Σ
+  balance_item amounts` (informational excluded); None + status `incomplete` (listing null lines) if any amount is
+  null; `bridge_difference = stated_amount_due − computed_amount_due`; items listed by balance_type
+  (`prior_period_adjustment` is excluded from comparable charges and shown separately).
+- **Flag rule (exact, no division):** `expected == 0 ∧ billed == 0` → matched; `expected == 0 ∧ billed ≠ 0` →
+  flagged `zero_expected_nonzero_billed`; else flagged `exceeds_threshold` iff `|billed − expected| > threshold ×
+  |expected|` (strict: exactly 1% is within). Applies to rows and to the total (only when expected_total exists).
+  Rows with expected or billed None are not flagged and are marked `coverage_gap`.
+- `AssessmentResult { threshold, rows: [{group_key, flagged, reason|None, coverage_gap}], total_flagged|None,
+  flagged_count }`.
+- **Reference classification (PRD §9.2):** `classify_reference(component_unit, calculated|None, reference,
+  abs_tol|None, rel_tol|None) -> pass|fail|pending`. USD components: pass iff `|calc − ref| ≤ max(abs_tol,
+  rel_tol × |ref|)` omitting unset terms; at `ref == 0` only the absolute term; `pending` when the applicable
+  term(s) are unset. Non-USD components pass only on exact equality unless an override supplies an abs tolerance
+  in that unit. Calculated None → `fail`. Overrides apply per field (a null field inherits the workspace value).
+  Run overall: `failed` if any fail; else `pending` if any pending; else `passed`.
 
-### 4.7 Explanations (`explain.py`)
-Deterministic, evidence-backed explanation generators run over reconciliation rows. Each explanation:
-`{ group_key, kind, text, status: documented|awaiting_confirmation|unresolved, evidence: [EvidenceLink{type:
-rule|parameter|invoice_line|input|document, ref, label}] }`. **No evidence → no explanation** (unsupported
-causal claims are omitted, R08). Generators (only emit when the numbers prove it):
-`rate_mismatch` (line rate × line qty = billed and differs from approved rate), `quantity_mismatch` (line qty ≠
-determinant used), `rounding_only` (|diff| ≤ $0.01 × number of rounded components), `not_billed`,
-`unmapped_line`, `fallback_billed_demand` (charges checked at billed demand; demand determination unchecked),
-`ratchet_applied` (billing demand set by lookback/contract floor, with the binding term), `minimum_bill_applied`,
-`missing_factor` (variable rider factor absent). Anything else → `unresolved` with "No documented cause".
+### 4.9 Explanations (`explain.py`)
+Deterministic, evidence-backed generators over reconciliation rows. `Explanation{group_key, kind, text, status,
+evidence: [EvidenceLink{type: rule|parameter|invoice_line|input|document, ref, label}]}`. No evidence → no
+explanation (R08). Status by kind — `documented`: `rate_mismatch`, `quantity_mismatch` (both only for groups
+with exactly one line and one `rate` component), `not_billed`, `unmapped_line`, `fallback_billed_demand`,
+`ratchet_applied` (names the binding term), `minimum_bill_applied`, `missing_factor`; `awaiting_confirmation`:
+`rounding_only` (|diff| ≤ $0.01 × number of rounded components), account exceptions (§6.12), AI or user drafts
+until Michael confirms; `unresolved` ("No documented cause", evidence = the row's invoice line) when no generator
+fires on a flagged/compared non-zero difference. Deterministic ordering.
 
-### 4.8 Comparison (`comparison.py`)
+### 4.10 Comparison (`comparison.py`)
 ```text
-CandidateIn { candidate_id, label, package: PackageDef, eligibility_status: unconfirmed|eligible|ineligible,
-              closed_to_new_business: bool, existing_eligibility_documented: bool,
-              reference_status: passed|failed|pending|none, unmodeled_conditions: [str],
-              specific_inputs: {"YYYY-MM": {key: InputValue}} }
-ScenarioIn  { months: ["YYYY-MM"...], shared_inputs: {"YYYY-MM": {key: InputValue}},
-              single_month_reuse_approved: bool, account_entity/territory per candidate }
+EligibilityFacts { confirmed_by_michael, schedule_status: open|closed_to_new_business|withdrawn,
+  new_enrollment: {status: unconfirmed|eligible|ineligible, evidence_count},
+  existing_account: {status: not_claimed|unconfirmed|documented|rejected, evidence_count,
+                     permitted_use|None, scenario_within_permitted_use: bool},
+  conditions: [{id, text, status: unknown|met|not_met, evidence_count}], evidence_conflict_open: bool,
+  territory_exception_evidence_count: int }
+derive_eligibility(facts, site_matches) -> (status: eligible|ineligible|unconfirmed, codes)
+ScenarioIn  { name, version_no, months: ["YYYY-MM"], site_entity, site_territory,
+              shared_inputs: {"YYYY-MM": {key: InputValue}}, history_inputs: {key: {"YYYY-MM": InputValue}},
+              single_month_reuse: {approved: bool, source_month}|None, forecast: {approved: bool, note}|None }
+CandidateIn { candidate_id, label, package: PackageDef (approved versions only), rules_approved: bool,
+              eligibility: EligibilityFacts, reference_status: passed|failed|pending|none,
+              specific_inputs: {"YYYY-MM": {key: InputValue}}, parameter_assumptions: {param: {"YYYY-MM": InputValue}},
+              commitments: [str], unmodeled_conditions: [str] }
 compare(scenario, candidates, baseline_id|None) -> ComparisonResult
 ```
-- Per candidate, per month: build a `CalcContext`; a shared input fills a candidate determinant **only** if
-  that `DeterminantDef.shared_compatible` is true and `semantic_type`+unit match; TOU and other
-  candidate-defined determinants require candidate-specific inputs (a flat monthly total never supplies
-  on-peak quantities — PRD R12).
-- Missing months without approved single-month reuse → partial. Reuse of one month for an annual horizon
-  only when `single_month_reuse_approved` (visible assumption).
-- `modeled = all months complete`. **Rankable** iff modeled ∧ eligibility `eligible` ∧ (not closed-to-new or
-  existing eligibility documented) ∧ reference_status `passed`. Exclusion reasons are listed per candidate.
-- Rank rankable candidates by total ascending (ties by label); `baseline_diff = total − baseline_total`.
-- `cheapest_label`: `"Lowest modeled cost for scenario '<name>' over <first>–<last> (<n> months) among <k>
-  eligible, fully modeled candidates: <label>"` (names scenario, horizon and candidate set — R12).
-- `is_scenario_estimate = true` when any value used has provenance `assumed` (label "Scenario estimate").
+- **Eligible** iff confirmed ∧ no open conflict ∧ every condition `met` with ≥1 evidence ∧ ((schedule open ∧
+  new_enrollment eligible with ≥1 evidence) ∨ (closed_to_new_business ∧ existing_account documented with ≥1
+  evidence ∧ permitted_use set ∧ scenario_within_permitted_use)). **Ineligible** if withdrawn, any condition
+  `not_met`, or new_enrollment ineligible without documented existing eligibility. Else **unconfirmed**.
+  Workspace facts (e.g. facility counts) never satisfy a condition.
+- Site gate: candidate entity/territory must equal the site's unless `territory_exception_evidence_count ≥ 1`.
+- Per candidate, per month (chronological): context with whole-month period; inputs = shared inputs that fill a
+  candidate determinant only if the catalog says shared-compatible ∧ semantic_type ∧ unit ∧ definition_id
+  match (null matches null), overlaid by candidate-specific inputs; series = `history_inputs` + earlier horizon
+  months' inputs + values published by components with `publishes_series`; `parameter_assumptions` fill missing
+  `by_period` months (provenance assumed). Months with no inputs use `single_month_reuse.source_month` only if
+  approved (assumed, noted). A flat monthly total never supplies TOU quantities (R12).
+- `modeled` = every month complete. **Rankable** iff modeled ∧ eligible ∧ rules_approved ∧ reference_status
+  passed. Exclusion codes ⊆ {`not_confirmed`, `eligibility_unconfirmed`, `eligibility_evidence_missing`,
+  `eligibility_conflict`, `ineligible`, `closed_without_existing_eligibility`, `outside_permitted_use`,
+  `condition_unmet:<id>`, `condition_unknown:<id>`, `schedule_withdrawn`, `wrong_utility_or_territory`,
+  `not_fully_modeled`, `rules_not_approved`, `reference_pending`, `reference_failed`, `no_reference_cases`}.
+- Ranking by total ascending (ties by label). `baseline_diff = total − baseline_total` when both fully modeled,
+  else None with reason `baseline_not_modeled`/`candidate_not_modeled`.
+- `cheapest_label`: `"Lowest modeled cost for scenario '<name>' v<n> over <first>–<last> (<n> months) among <k>
+  eligible, fully modeled candidates [<l1>, <l2>, …]: <label> (modeled estimate)"`; ties name all tied; None when
+  k = 0. `is_scenario_estimate` = any assumed input/parameter, reuse applied, or forecast used.
+```text
+ComparisonResult { scenario_name, scenario_version, horizon: {first, last, months},
+  candidates: [{ candidate_id, label, schedule_codes, version_labels, utility_entity, territory,
+    entry_restrictions, eligibility_status, eligibility_codes, coverage, covered_months, missing_inputs,
+    monthly: [{month, coverage, total|None}], component_totals: [{component_key, total}], total|None,
+    baseline_diff|None, baseline_diff_reason|None, cost_drivers (top 3 |component_totals|, ties by key),
+    commitments, unmodeled_conditions, unresolved, source_refs, assumptions, rankable, exclusions: [code] }],
+  ranking: [candidate_id], cheapest_label|None, is_scenario_estimate }
+```
 
-### 4.9 Engine version
-`tariff_engine.ENGINE_VERSION` (semver string). Recorded on every analysis, reference run, comparison run.
-Any change to engine arithmetic semantics bumps it.
+### 4.11 Engine version
+`tariff_engine.ENGINE_VERSION` (semver). Recorded on analyses, reference runs, comparison runs. Arithmetic
+semantic changes bump it.
 
 ---
 
 ## 5. Persistence model (`tariff_app.models`)
 
-IDs are opaque prefixed strings `"<prefix>_<16 hex>"` (`fac_`, `acct_`, `doc_`, `src_`, `tsch_`, `tver_`,
-`tpkg_`, `asg_`, `inv_`, `line_`, `iset_`, `ival_`, `an_`, `asm_`, `fnd_`, `ref_`, `scn_`, `cand_`, `run_`…).
-Analyses also carry a human code `AN-000001`. Timestamps are timezone-aware UTC via an injectable `Clock`.
-All decimal columns use `DecimalText`. JSON columns hold engine models dumped with `mode="json"`.
+IDs are opaque prefixed strings `"<prefix>_<16 hex>"`. Analyses also carry a human code `AN-000001`.
+Timestamps are timezone-aware UTC via an injectable `Clock` (`SystemClock`, `FixedClock`). Decimal columns use
+`DecimalText` (canonical string; **never filtered or sorted in SQL**). JSON columns use `canonical_json` and a
+deserializer that rejects floats; read paths re-validate JSON into engine models. **Each step adds the tables it
+needs in a new autogenerated Alembic revision named `sNN_<area>`; committed revisions are never edited.**
+Alembic: `render_as_batch=True`, `compare_type=True`, `script_location=%(here)s/migrations`, template imports
+`tariff_app.db.types`. A drift test asserts `upgrade head` == ORM metadata.
 
 | Table | Key columns (beyond id/created_at) |
 |---|---|
 | `workspace` | name, user_display_name (`Michael Weizman`) |
 | `settings_version` | version_no (unique), investigation_threshold (default `0.01`), abs_tolerance NULL, rel_tolerance NULL, reason |
-| `tolerance_override` | settings_version_id, component_key, abs_tolerance NULL, rel_tolerance NULL |
-| `facility` | code (unique), name, service_address, state, operating_status (`operating/planned/unknown`), record_status (`confirmed/research_candidate`), research_evidence, research_source_refs (json), is_synthetic, notes, updated_at |
+| `tolerance_override` | settings_version_id, component_key, unit (default USD), abs_tolerance NULL, rel_tolerance NULL |
+| `research_candidate` | location, state, evidence_text, source_refs (json S-ids), research_date, implied_status (`operating/planned/historical/host_site`), product_implication, status (`unconfirmed/matched/excluded`), matched_facility_id NULL — **no utility/tariff columns** |
+| `facility` | code (unique), name, service_address, state, operating_status (`operating/planned/unknown`), archived_at NULL, is_synthetic, notes, updated_at |
 | `production_unit` | facility_id, name, description |
-| `utility_account` | facility_id, production_unit_id NULL, account_number, meter_ids (json), utility_legal_entity NULL, service_territory NULL, tariff_code NULL, invoice_issuer NULL, billing_arrangement (`direct_utility/host_site/supplier_contract/unknown`), scope_classification (`regulated_in_scope/host_site/supplier_contract/pending`), service_voltage_kv NULL, record_status (`confirmed/pending_confirmation`), is_synthetic, notes |
-| `account_fact` | account_id, key, semantic_type, value NULL, text_value NULL, unit, effective_from, effective_to NULL, provenance, source_ref_id NULL, note, superseded_by_id NULL |
-| `source_document` | kind (`invoice/tariff/rider/factor_table/contract/roster/billing_summary/credit_evidence/other`), original_filename, content_hash (unique), storage_path, mime_type, size_bytes, source_url NULL, publication_date NULL, effective_date NULL, retrieved_at NULL, uploaded_at, facility_id NULL, account_id NULL, page_count, extraction_status (`pending/extracted/partial_unreadable/failed/not_applicable`), is_synthetic |
-| `document_page` | document_id, page_no, text, readable, lines (json: [{line_no, text, x0, top}]) |
-| `source_ref` | document_id, page_no NULL, locator, quote — quote must occur (whitespace-normalized) in the page text |
-| `tariff_schedule` | code, name, kind, utility_legal_entity, service_territory, status (`open/closed_to_new_business/withdrawn`), is_private, account_id NULL, is_synthetic, description |
-| `tariff_version` | schedule_id, version_no, version_label, effective_from, effective_to NULL, source_document_id NULL, definition (json TariffVersionDef), content_hash, state (`draft/approved/superseded/rejected`), based_on_version_id NULL, edit_reason, approved_at NULL, approval_reason NULL, reference_status (`none/pending/passed/failed`) |
-| `tariff_package` / `tariff_package_member` | name, entity, territory / package_id, schedule_id, role, precedence, overrides (json) |
-| `tariff_assignment` | account_id, package_id, effective_from, effective_to NULL, state (`proposed/approved/retired`), approved_at, reason, allocation_rule (`none/prorate_by_days`), allocation_approved_at NULL |
-| `line_mapping_rule` | account_id, label_pattern, match_type (`exact/contains/regex`), component_keys (json), category, balance_type NULL, state (`proposed/approved`), reason |
-| `invoice` | account_id NULL, document_id NULL, invoice_number, statement_date, period_start, period_end, billing_month, amount_due NULL, version_no, supersedes_id NULL, superseded_by_id NULL, state (`pending_confirmation/confirmed/superseded/rejected_duplicate`), assignment_status (`assigned/ambiguous/unassigned`), extraction_method (`heuristic/ai/manual`), is_synthetic |
+| `utility_account` | facility_id, production_unit_id NULL, account_number, meter_ids (json), service_address NULL, utility_legal_entity NULL, service_territory NULL, tariff_code NULL, invoice_issuer NULL, billing_arrangement (`direct_utility/host_site/supplier_contract/unknown`), scope_classification (`regulated_in_scope/host_site/supplier_contract/pending`), scope_evidence_ref NULL, record_status (`confirmed/pending_confirmation`), enabled_at NULL, is_synthetic, notes — entity/territory/tariff_code edits record provenance via `correction_event` with source (`roster/invoice/contract/manual`) |
+| `account_fact` | account_id, key (catalog key or account setting e.g. `day_count_convention`), semantic_type, value NULL, text_value NULL, unit, effective_from, effective_to NULL, provenance, source_ref_id NULL, note, superseded_by_id NULL |
+| `account_exception` | account_id, description, component_key NULL, label_pattern NULL, evidence_refs (json), effective_from, effective_to NULL |
+| `source_document` | kind (`invoice/tariff/tariff_summary/rider/factor_table/contract/roster/billing_summary/correspondence/credit_evidence/other`), authority (`governing/summary/correspondence/research/customer_record`), original_filename, content_hash (unique), storage_path, mime_type, size_bytes, source_url NULL, publication_date NULL, effective_date NULL, retrieved_at NULL, uploaded_at, facility_id NULL, account_id NULL, page_count, extraction_status (`pending/extracted/partial_unreadable/failed/not_applicable`), supersedes_id NULL, is_synthetic — CHECK source_url ⇒ retrieved_at + hash + storage |
+| `document_page` | document_id, page_no, text, readable, lines (json [{line_no, text, x0, top}]); spreadsheets: one page per sheet, lines = rows, text = cells joined by ` \| ` |
+| `source_ref` | document_id, page_no NULL, locator (`line 12` / `lines 12-14` / `Sheet1!B7`), quote NULL, transcription_note NULL — quote must occur (whitespace-normalized) in the page text (PDF) or equal the cell display value (sheet); quote NULL only for unreadable pages with transcription_note |
+| `source_conflict` | subject_type (`parameter/component/applicability/eligibility`), subject_key, tariff_version_id NULL, candidate_id NULL, source_ref_ids (json, ≥2), status (`open/resolved`), governing_source_ref_id NULL, resolution_note, resolved_at NULL |
+| `tariff_schedule` | code (unique), name, kind, utility_legal_entity, service_territory, status (`open/closed_to_new_business/withdrawn`), is_private, account_id NULL, is_synthetic, description |
+| `tariff_version` | schedule_id, version_no, version_label, effective_from, effective_to NULL, effective_basis, source_document_id NULL, definition (json TariffVersionDef), content_hash, state (`draft/approved/superseded/rejected`), based_on_version_id NULL, edit_reason, approved_at NULL, approval_reason NULL |
+| `tariff_package` | code (unique), name, utility_legal_entity, service_territory, description, is_synthetic |
+| `tariff_package_version` | package_id, version_no, members (json [{schedule_id, role, precedence, member_from, member_to, overrides}]), state (`draft/approved/superseded`), based_on_id NULL, edit_reason, approved_at NULL, approval_reason NULL |
+| `tariff_assignment` | account_id, package_id, effective_from, effective_to NULL, state (`proposed/approved/retired`), approved_at NULL, reason, allocation_rule (`none/prorate_by_days`), allocation_source_ref_id NULL, allocation_approved_at NULL |
+| `line_mapping_rule` | account_id, label_pattern, match_type (`exact/contains/regex`), component_keys (json), category, balance_type NULL, out_of_scope_reason NULL, state (`proposed/approved`), reason |
+| `extraction_proposal` | document_id, account_guess_id NULL, method (`heuristic/ai`), proposal (json), warnings (json), state (`pending/confirmed/discarded`), invoice_id NULL |
+| `import_batch` | kind (`roster/billing_summary/scenario_inputs`), document_id, state (`previewed/confirmed/rejected`), preview (json), result (json) |
+| `invoice` | account_id NULL, document_id NULL, proposal_id NULL, invoice_number NULL, statement_date NULL, period_start NULL, period_end NULL, billing_month NULL, amount_due NULL, version_no, supersedes_id NULL, duplicate_of_id NULL, state (`pending_confirmation/pending_duplicate_resolution/confirmed/superseded/rejected_duplicate`), duplicate_kind NULL (`probable_duplicate/revision_candidate`), assignment_status (`assigned/ambiguous/unassigned`), unresolved_fields (json), extraction_method (`heuristic/ai/manual`), is_synthetic |
 | `invoice_line` | invoice_id, line_no, label, category, balance_type NULL, amount NULL, quantity NULL, quantity_unit, rate NULL, rate_unit, provenance, source_ref_id NULL, out_of_scope_reason NULL |
-| `invoice_line_mapping` | invoice_id, group_key, invoice_line_id NULL, component_key NULL, origin (`rule/manual`), reviewed |
-| `input_set` / `input_value` | account_id, invoice_id NULL, billing_month, period_start/end, version_no, supersedes_id NULL, reason / input_set_id, key, semantic_type, value NULL, unit, period NULL, provenance, source_ref_id NULL, note |
-| `correction_event` | entity_type, entity_id, field, old_value, new_value, reason |
-| `analysis` | code, account_id, invoice_id, input_set_id, assignment_id, billing_month, version_no, supersedes_id NULL, superseded_by_id NULL, status (`draft/ready_for_review/reviewed`), is_stale, stale_reasons (json), engine_version, tariff_version_ids (json), fingerprint, snapshot (json), result (json: calculation + reconciliation + explanations), coverage, demand_determination, partial_acknowledged, partial_ack_note, review_conclusion NULL, review_notes NULL, reviewed_at NULL |
-| `assessment` | analysis_id, settings_version_id, version_no, threshold, abs/rel tolerance snapshot, rows (json), total_flagged, flagged_count |
-| `explanation_review` | analysis_id, group_key, explanation_index NULL, status, note, origin (`engine/ai/user`), text NULL, evidence (json) |
-| `finding` (+ `finding_event`) | account_id, analysis_id NULL, invoice_id NULL, billing_month, group_key NULL, component_key NULL, kind (`difference/missing_item/coverage_gap`), amount NULL, state (`needs_review/explained/accepted_below_threshold/utility_inquiry/credit_requested/closed`), classification (`potential_discrepancy/confirmed_billing_error/not_an_error`), notes, next_action, evidence (json), owner (fixed) |
+| `invoice_line_mapping` | invoice_id, group_no, invoice_line_id NULL, component_key NULL, origin (`rule/label_match/manual`), reviewed |
+| `input_set` / `input_value` | account_id, invoice_id NULL, billing_month, period_start, period_end, version_no, supersedes_id NULL, reason / input_set_id, key, semantic_type, value NULL, unit, period NULL, definition_id NULL, provenance, source_ref_id NULL, note |
+| `correction_event` | entity_type, entity_id, field, old_value, new_value, reason, source (`roster/invoice/contract/manual/correction`) |
+| `analysis` | code, account_id, invoice_id, input_set_id, assignment_id, package_version_id, billing_month, version_no, supersedes_id NULL, is_current, status (`draft/ready_for_review/reviewed`), is_stale, stale_reasons (json), engine_version, tariff_version_ids (json), fingerprint, snapshot (json), result (json: calculation + reconciliation + explanations), coverage (reconciliation), calc_coverage, demand_determination, partial_acknowledged, partial_ack_note, reviewed_assessment_id NULL, open_findings_snapshot (json) NULL, review_conclusion NULL, review_notes NULL, reviewed_at NULL — partial unique index (fingerprint) WHERE is_current |
+| `assessment` | analysis_id, settings_version_id, version_no, threshold, tolerance snapshot (json), result (json AssessmentResult), total_flagged NULL, flagged_count — unique (analysis_id, settings_version_id) |
+| `explanation_review` | analysis_id, group_key, explanation_kind NULL, status, note, origin (`engine/ai/user`), text NULL, evidence (json) |
+| `finding` / `finding_event` | account_id, analysis_id NULL, assessment_id NULL, invoice_id NULL, billing_month, group_key NULL, component_key NULL, kind (`difference/missing_item/coverage_gap`), amount NULL, state (`needs_review/explained/accepted_below_threshold/utility_inquiry/credit_requested/closed`), classification (`potential_discrepancy/confirmed_billing_error/not_an_error`), notes, next_action NULL, outcome NULL, explanation_ref NULL, evidence (json), owner (fixed) / finding_id, from_state, to_state, reason |
 | `billing_error_confirmation` | finding_id, confirmed_on, utility_reference, amount, evidence_document_id NULL, note |
 | `credit_receipt` | finding_id NOT NULL, document_id NOT NULL, amount, received_on, applied_invoice_id NULL, note |
-| `reference_case` / `reference_run` | name, account_id NULL, package_id, is_synthetic, held_out, context (json), expected (json {component_key: decimal}), expected_scope, source_version_ids, from_analysis_id NULL, version_no / case_id, settings_version_id, engine_version, results (json), overall (`passed/failed/pending`) |
-| `comparison_scenario` / `comparison_candidate` / `scenario_input` / `comparison_run` | facility_id, name, version_no, supersedes_id, horizon_start, horizon_months, baseline_candidate_id, single_month_reuse_approved, forecast_note, change_note / scenario_id, package_id, label, eligibility_status, eligibility_evidence, evidence_document_ids, existing_eligibility_documented, grandfathering_note, commitments, unmodeled_conditions, confirmed / scenario_id, candidate_id NULL (shared), billing_month, key, semantic_type, value NULL, unit, provenance, source_ref_id, note / scenario_id, scenario_version_no, engine_version, result (json) |
-
-Schema changes go through Alembic; `tests/app/test_migrations.py` asserts `alembic upgrade head` produces
-exactly the ORM metadata (no drift).
+| `reference_case` / `reference_run` | name, package_id, account_id NULL, origin (`synthetic_fixture/michael_worked_bill/saved_analysis`), is_synthetic, held_out, setup_case_ids (json), billing_month, context (json), allocation, expected (json {component_key: decimal}), expected_scope (json), derivation (json), from_analysis_id NULL, approved_at NULL, approval_note, version_no / case_id, settings_version_id, engine_version, package_version_id, calculated (json), results (json), overall (`passed/failed/pending`) |
+| `document_request` | account_id NULL, facility_id NULL, scenario_id NULL, code (`D01`–`D08`), request_key (unique deterministic), description, periods (json), needed_by (json), generated_from, status (`open/received/waived`), fulfilled_by_document_id NULL, waived_reason NULL |
+| `comparison_scenario` | facility_id, name, version_no, supersedes_id NULL, horizon_start, horizon_months, site_entity, site_territory, site_evidence_ref NULL, baseline_candidate_id NULL, single_month_reuse (json), forecast (json), change_note, is_synthetic |
+| `comparison_candidate` | scenario_id, package_id, label, confirmed_by_michael, new_enrollment (json {status, evidence_refs}), existing_account (json {status, account_id, permitted_use, scenario_within_permitted_use, evidence_refs}), conditions (json [{id, text, source_ref_id, status, evidence_refs}]), evidence_conflict (json {open, note}), territory_exception_refs (json), commitments (json), unmodeled_conditions (json) |
+| `scenario_input` | scenario_id, candidate_id NULL (shared), kind (`horizon/history/parameter_assumption`), billing_month, key, semantic_type, value NULL, unit, definition_id NULL, provenance, source_ref_id NULL, note |
+| `comparison_run` | scenario_id, scenario_version_no, engine_version, settings_version_id, result (json ComparisonResult) |
 
 ---
 
-## 6. Versioning & lifecycle semantics (R04, §5 "Review states", §7 "Processing sequence")
+## 6. Lifecycle, versioning & governance
 
-- **Tariff versions:** `draft → approved` (Michael, with reason + timestamp) → `superseded` when a newer
-  approved version covers the same effective interval. Editing an approved version creates a **new draft**
-  (`based_on_version_id`), never mutates. Approval requires zero validation errors and an approved account
-  applicability (`tariff_assignment.state=approved`) before any analysis using it can be finalized.
-- **Staleness:** approving a new tariff version, correcting an invoice line, creating a new input-set
-  version, replacing a source document, or changing a tariff assignment marks every **draft /
-  ready_for_review** analysis that used the old object `is_stale=true` with a reason. Reviewed analyses are
-  never modified; the API reports "newer inputs/rules exist" for them as a computed flag.
+### 6.1 Tariff versions
+- `draft → approved` by Michael with reason + timestamp. Approval requires: zero validation errors; a
+  `source_document_id` (stored snapshot; URL-only documents are impossible by schema); every `supported` component
+  citing ≥1 source_ref in an `authority=governing` document (else `409 summary_not_calculation_basis` — the
+  component may be saved as `awaiting_input` with request "governing tariff sheet for <component>"); no open
+  `source_conflict` on it.
+- Approved content (definition, effective_from, effective_to, content_hash) is immutable. **Derived interval** for
+  selection: `[effective_from, min(effective_to, effective_from of the next approved, non-superseded version of the
+  same schedule))`. Approving a newer version never edits older rows; two approved versions with the same
+  effective_from are not allowed except via correction.
+- Editing an approved version creates a new **draft** (`based_on_version_id`). If approved with the same
+  effective_from, it is a **correction** and the prior version becomes `superseded` (still readable from snapshots,
+  never selected for new runs).
+- `POST /tariff-versions/{id}/preview` runs the engine on a supplied context without persisting (draft rules can
+  be tried only this way).
+
+### 6.2 Packages & assignments
+- `tariff_package_version` members carry `member_from/member_to`, role, precedence, overrides (with reasons).
+  Edits create a new draft; approval requires zero `validate_package` errors for every period in its members'
+  ranges and a reason per override. Resolution uses the latest approved package version.
+- `resolve_package_def(package_id, period_start, period_end, statement_date)` (S14b) is the **only** way to build
+  engine input: loads every APPROVED, non-superseded version of each member schedule whose derived interval
+  intersects the period (sorted), sets `missing` (with `provides` from the nearest approved version) when none,
+  and returns `ResolvedPackage{package: PackageDef, package_version_id, tariff_version_ids}`.
+- Assignment `proposed → approved` (Michael, reason) checks the package entity/territory equals the account's
+  (`422 wrong_utility_or_territory`). The allocation rule (`none/prorate_by_days`) is approved separately with a
+  source_ref to the governing rule.
+
+### 6.3 Analyses
+- Creation requires an **approved assignment covering the period** (`409 assignment_not_approved`), an invoice in
+  `confirmed` state with no unresolved required fields (`409 invoice_not_ready`). Only approved versions execute;
+  missing ones produce `missing_source` requests (partial), never a draft fallback.
+- `build_calc_context(account, invoice, input_set)` (S15c): inputs = account facts effective on period_end
+  (as InputValues) overlaid by input-set values; the same key with different values in both → blocking issue
+  `conflicting_input`; series[key][YYYY-MM] = the latest confirmed, non-superseded input set's value for each prior
+  billing month of the account, plus billing-summary history values; null counts as missing.
+- **Snapshot & fingerprint:** `snapshot_core = {engine_version, package_version_id, members (schedule, version ids,
+  content hashes, role, precedence, overrides), assignment_id, allocation_rule, invoice_id, invoice version_no,
+  lines [{id, amount, category, balance_type, out_of_scope_reason}], mapping groups incl. reviewed, full
+  CalcContext (all InputValues incl. series and facts with ids/source_ref ids)}`; `fingerprint =
+  sha256(canonical_json(snapshot_core))`. Partial unique index on fingerprint where `is_current`; create is one
+  transaction and, on conflict, returns the existing current analysis (safe retries, concurrent submits).
+- **Rerun** creates a new version (`supersedes_id`, `is_current` moves), prior row untouched; the result records
+  the approved versions used. Reproducibility check: re-run engine from the stored snapshot → identical result JSON.
+- **States:** `draft → ready_for_review` (requires not stale; coverage ≠ complete requires
+  `partial_acknowledged` + note) `→ reviewed` (requires conclusion; stores `reviewed_assessment_id` and
+  `open_findings_snapshot`). Reviewed content is immutable (`409 analysis_reviewed` on mutation). Stale analyses
+  cannot transition (`409 stale_analysis`).
+- **Staleness:** services publish domain events on an in-process bus (`tariff_app.events`) from S12 on:
+  `tariff_version.approved`, `package_version.approved`, `assignment.changed`, `invoice.superseded`,
+  `invoice_line.corrected`, `input_set.versioned`, `mapping.changed`, `mapping_rule.changed`,
+  `account_fact.changed`, `document.replaced`, `billing_history.imported`. The S16b subscriber recomputes the
+  fingerprint of every current draft/ready analysis of affected accounts; if it differs → `is_stale=true`,
+  `stale_reasons` = differing snapshot keys. Reviewed analyses expose computed `newer_inputs_or_rules_exist`.
   `GET /tariff-versions/{id}/affected-analyses` lists analyses to rerun explicitly.
-- **Analysis versions:** every calculation creates an analysis row. A rerun creates a new version with
-  `supersedes_id` and leaves the prior row intact. Creation is idempotent: the same
-  `fingerprint = sha256(invoice version, input-set version, tariff version ids, assignment, mappings, engine
-  version)` returns the existing non-superseded analysis instead of duplicating (safe retries).
-- **Analysis states:** `draft → ready_for_review` (requires saved calculation; if coverage ≠ complete,
-  requires `partial_acknowledged` with note) `→ reviewed` (requires conclusion; freezes analysis, explanation
-  reviews and the latest assessment). Findings remain independently open.
-- **Assessments:** created at analysis creation using current settings. A settings change never mutates an
-  assessment; an explicit `POST /analyses/{id}/reevaluate` creates a new assessment version reusing the
-  saved amounts. Reports/exports reference a specific assessment version.
-- **Settings:** append-only versions. Current = highest version_no.
-- **Invoices:** identical content hash → duplicate (rejected, points to original). Same account + invoice
-  number/period with different content → *revision candidate*: requires explicit `supersede` action; the
-  new invoice gets `version_no+1`, the prior becomes `superseded`. Analyses of superseded invoices are
-  retained and labeled.
-- **Comparison scenarios:** editing creates a new scenario version; `GET /comparison-scenarios/{id}/diff/{other}`
-  shows changed assumptions. Runs are immutable and record the scenario version.
+
+### 6.4 Assessments & review
+- An assessment is created with each analysis using current settings. A settings change never mutates it.
+  `POST /analyses/{id}/reevaluate` (any status, incl. reviewed/stale) creates assessment vN+1 from stored amounts
+  only (never calls `calculate`), idempotent per (analysis, settings_version). Reports/exports reference a
+  specific assessment (default: `reviewed_assessment_id` if reviewed, else latest); later assessments are labeled
+  "post-review".
+- Explanation reviews: Michael confirms/rejects engine/AI drafts or adds his own explanation (must cite ≥1
+  resolvable evidence link). Statuses `documented / awaiting_confirmation / unresolved`.
+
+### 6.5 Invoices: duplicates, revisions, required fields
+- Identical content hash → upload returns the original document (`200`, `duplicate_of`); no new invoice.
+- Same account + invoice_number + billing period with every amount equal → `pending_duplicate_resolution /
+  probable_duplicate`; any amount different → `revision_candidate`. Both block analysis creation
+  (`409 duplicate_resolution_required`) until Michael chooses `POST /invoices/{id}/reject-duplicate` or
+  `POST /invoices/{id}/supersede` (reason; prior → `superseded`, version_no+1, drafts stale, reviewed analyses
+  labeled "invoice superseded").
+- Required fields: account assignment, invoice_number, period_start, period_end, billing_month, amount_due, each
+  line's amount and category. Confirming with any null keeps `pending_confirmation` with `unresolved_fields` as
+  input requests; values are never defaulted. Ambiguous account → `assignment_status=ambiguous` + confirm action.
+- `POST /extraction-proposals/{id}/confirm` is idempotent (second call returns the created invoice).
+
+### 6.6 Settings
+Append-only versions; current = highest version_no; defaults threshold `0.01`, tolerances unset. Overrides are
+per component with a unit; null fields inherit the workspace value.
+
+### 6.7 Reference cases & status
+- `reference_case.origin ∈ {synthetic_fixture, michael_worked_bill, saved_analysis}`; only **approved** cases
+  count. For a non-synthetic account only non-synthetic approved cases validate it; synthetic cases demonstrate
+  software behavior. `held_out=true` requires a billing_month later than every setup case's (`422`).
+- Runs use approved versions resolved for the case month; `POST /reference-cases/reclassify` creates new runs under
+  the current settings reusing stored calculated amounts (no recalculation). Runs are immutable.
+- **Package reference status (computed, never stored):** over approved cases of the package, using each case's
+  latest run under the current settings version: `failed` if any failed; else `pending` if any pending; else
+  `passed` if ≥1; `none` if no approved cases. Candidate reference_status = its package's.
+
+### 6.8 Document requests (PRD §2, §10)
+`refresh_document_requests(account|scenario)` (idempotent, deterministic `request_key`) generates:
+D01 missing roster fields; D02 one per missing month in `M−11 … M` (M = latest confirmed billing month,
+superseded invoices excluded); D03 one per member schedule lacking an approved version for an invoice period and
+per missing `by_period` factor month; D04 one per account fact referenced by components but absent, plus scope
+evidence for host_site/supplier accounts; D05 extra months for lookbacks beyond 11 months and a "documented
+historical baseline (highest firm demand previously established)" per baseline input; D06/D08 when a package lacks
+an approved reference case or tolerances are unset; D07 for scenarios missing candidate-specific summaries.
+Uploading/confirming a fulfilling document marks requests `received`; Michael may `waive` with a reason.
+
+### 6.9 Account readiness & enablement (R01, R04 "Account enablement", §8 release standard)
+```text
+AccountReadiness { configuration: {status: awaiting_setup|partial|configured, checks: [{code, status: pass|fail|unknown, detail}],
+                   component_counts: {supported, awaiting_input, awaiting_implementation}},
+                   calculation: {latest_billing_month, latest_analysis_id, coverage: complete|partial|blocked|none, uncovered_count},
+                   validation: {package_reference_status, validated_components, pending, failed},
+                   outstanding: {document_request_ids, awaiting_implementation_components},
+                   enablement: {enabled, enabled_at, blockers: [code]} }
+```
+Configuration checks (owner step): `roster_fields_confirmed`, `scope_classified` (S12); `package_version_approved`,
+`assignment_approved`, `versions_cover_invoice_periods`, `components_supported` (S14b); `invoice_labels_mapped`
+(S15c); `reference_status_passed`, `no_open_d01_d04` (S20). Unimplemented checks report `unknown`.
+`POST /accounts/{id}/enable` (reason) only when blockers = ∅; blockers include awaiting_input/
+awaiting_implementation components, failing approved reference runs (`known_incorrect_calculation`), no passing
+held-out case, open D01–D04 requests, scope not regulated_in_scope. Enablement lapses with a recorded event when a
+blocker reappears. Non-enabled accounts appear as "awaiting setup" in the queue.
+
+### 6.10 Source governance (PRD §9.3)
+`authority` on documents; summaries never serve as a calculation basis (§6.1). `source_conflict` blocks the
+affected component (status `blocked`, reason `source_conflict`) or candidate (`eligibility_conflict`) until
+resolved with a governing source_ref + Michael's note. Re-fetching a URL whose bytes changed creates a new
+document (new hash, same URL) and never overwrites the snapshot. `POST /documents/{id}/replace` creates a successor
+document (`supersedes_id`) and emits `document.replaced`.
+
+### 6.11 Comparison scenarios
+Editing creates a new scenario version (copy of candidates and inputs); `GET /comparison-scenarios/{id}/diff/{other}`
+lists changed assumptions/inputs/candidates. The API rejects `eligible`/`documented` without evidence refs
+(`422 eligibility_evidence_required`). Runs are immutable and record scenario version, settings version and
+package reference statuses. Comparison exports: CSV + printable report (§8).
+
+### 6.12 Findings & account exceptions
+- Transitions: any non-closed → any state with a `finding_event {from, to, reason}`; `→ closed` requires
+  `outcome`; `→ accepted_below_threshold` requires the linked row to be unflagged in the referenced assessment
+  (`409 not_below_threshold`); `→ credit_requested` requires `next_action`; `closed → needs_review` requires a
+  reason. A potential discrepancy, a `billing_error_confirmation` and a `credit_receipt` (requires finding + document)
+  are distinct records. Findings survive reruns (linked by account + billing_month + group_key).
+- `account_exception` records recurring account-specific exceptions; on later reviews they surface as
+  `awaiting_confirmation` explanation candidates and never auto-close flags.
 
 ---
 
-## 7. Extraction (`tariff_app.extraction`)
+## 7. Extraction & import (`tariff_app.extraction`, `tariff_app.synthetic`)
 
-- `pdf_text.extract(path) -> [PageText{page_no, text, lines[{line_no, text, x0, top}], readable}]`.
-  A page is unreadable when it has < 20 non-whitespace characters → input request "replace page or
-  transcribe manually" (R02).
-- `InvoiceExtractor` protocol → `InvoiceProposal{ fields (invoice_number, account_number, statement_date,
-  period_start, period_end, amount_due) each with value + source locator, lines [...], determinants
-  [{key, semantic_type, value, unit, period, locator}], warnings }`.
-  - `HeuristicInvoiceExtractor`: deterministic regex parser for the synthetic invoice layout and common
-    "Label  qty unit @ rate  $amount" lines. Always available.
-  - `ClaudeInvoiceExtractor`: structured-output call (JSON schema) when `ANTHROPIC_API_KEY` is set. Every
-    returned value must be found in the cited page/line text (normalized); otherwise dropped with a warning.
-- Tariff rule drafting from documents (optional AI) produces a **draft** `TariffVersionDef` with
-  `source_refs` validated the same way; never auto-approved.
-- Proposals are persisted as `pending_confirmation`; `POST .../confirm` (with optional corrections) creates
-  the invoice/lines/input set. Every corrected field records a `correction_event`.
+- `pdf_text.extract(bytes) -> [PageText{page_no, text, lines[{line_no, text, x0, top}], readable}]`; a page with
+  < 20 non-whitespace characters is unreadable → document request "replace page or transcribe manually"
+  (manual values get provenance `manual` and a source_ref with `quote=NULL` + transcription note).
+- Spreadsheets (CSV/XLSX) normalize into `document_page` rows (one per sheet), lines = rows, locator `Sheet!A1`.
+- **Synthetic PDF generator** (`tariff_app.synthetic.pdfgen`, S13): built-in Helvetica only, all text latin-1
+  (raise otherwise; use `-` and `<=`, not `–`/`≤`), `set_creation_date(2026-01-01T00:00Z)` + fixed metadata →
+  identical bytes for identical specs. One logical line per cell; fields separated by ` | ` (pdfplumber collapses
+  multiple spaces). `render_document(title, pages)`, `render_invoice(spec)`.
+- **Synthetic invoice grammar** (parsed by the heuristic extractor):
+  `SYNTHETIC INVOICE - NOT A REAL BILL` · `Utility: <legal entity>` · `Invoice number: <x>` · `Account number: <x>` ·
+  `Statement date: YYYY-MM-DD` · `Billing month: YYYY-MM` · `Service period: YYYY-MM-DD to YYYY-MM-DD` ·
+  `Amount due: $1,234.56` · `CHARGES` rows `<label> | <qty> <unit> @ <rate> <rate_unit> | <signed $amount>` or
+  `<label> | | <signed $amount>` · `DETERMINANTS` rows `<label>: <value> <unit>` · `BALANCE` rows
+  `<label> | <signed $amount>`. `CR`, `(…)` and trailing `-` parse as negative.
+- `InvoiceExtractor` protocol → `InvoiceProposal{fields (each value + locator + confidence), lines, determinants
+  [{key, value, unit, period, locator}], warnings}`. `HeuristicInvoiceExtractor` (always available);
+  `ClaudeInvoiceExtractor` (optional, S15e) uses structured output; values not found in the cited text are dropped.
+- Billing-summary import (S15d): canonical columns `account_number, billing_month, key, value, unit[, period_start,
+  period_end, note]` → preview (row errors: unknown key/unit, duplicates, conflicts) → confirm → input values
+  (provenance reported, cell source_refs) feeding current months or history series.
 
 ---
 
 ## 8. API conventions (`/api/v1`)
 
-- Resource routers per area: `settings`, `facilities`, `accounts`, `roster`, `documents`, `source-refs`,
-  `tariff-schedules`, `tariff-versions`, `tariff-packages`, `assignments`, `mapping-rules`, `invoices`,
-  `input-sets`, `analyses`, `assessments`, `findings`, `reference-cases`, `comparison-scenarios`,
-  `portfolio`, `exports`, `meta`.
-- Pydantic response models for everything (documented in OpenAPI). Decimals are strings. Enums are strings.
-- Errors: HTTP 4xx with `{"detail": str, "code": str, "context": {...}}`; codes are stable identifiers
-  (e.g. `duplicate_invoice`, `invalid_state_transition`, `validation_failed`, `stale_analysis`).
-- State transitions are explicit POST actions (`/approve`, `/submit-for-review`, `/review`, `/supersede`,
-  `/reevaluate`, `/rerun`), never implicit side-effects of PATCH.
-- `GET /api/v1/meta` → app version, engine version, AI availability, synthetic-data flag.
-- `make openapi` writes `frontend/src/api/openapi.json` and regenerates `frontend/src/api/schema.d.ts`;
-  CI fails if they are out of date.
+- Routers: `meta, settings, research-candidates, facilities, accounts, roster, documents, source-refs,
+  source-conflicts, tariff-schedules, tariff-versions, tariff-packages, assignments, mapping-rules,
+  extraction-proposals, invoices, input-sets, billing-summaries, analyses, assessments, findings,
+  reference-cases, document-requests, comparison-scenarios, portfolio, exports, views`.
+- **Errors:** `tariff_app.api.errors.AppError(status, code, detail, context)`; handlers map AppError, Starlette
+  HTTPException (`code="http_<status>"`) and RequestValidationError (`422 {detail: "Request validation failed",
+  code: "validation_failed", context: {errors: [{loc, msg, type}]}}`) to `ErrorOut {detail, code, context}`.
+  Every router declares `responses={400,404,409,413,422: {"model": ErrorOut}}`; OpenAPI post-processing removes
+  `HTTPValidationError`.
+- **Typed responses only:** JSON columns are re-validated into engine/API models on read; `dict[str, Any]`/`Any`
+  in response models is forbidden (a test walks `app.openapi()` and fails on schemaless objects).
+- Decimals are `DecimalStr`; enums are strings; state transitions are explicit POST actions (`/approve`,
+  `/submit-for-review`, `/review`, `/supersede`, `/reject-duplicate`, `/reevaluate`, `/rerun`, `/enable`, `/confirm`).
+- **Read models for screens (S24b):** `GET /views/analyses/{id}/review` (ReviewView: header {facility, utility legal
+  entity, account, billing period/month, invoice version, package + resolved versions}, coverage + check scope +
+  input requests, totals + bridge, rows with assessment flags + evidence, explanations + review statuses, findings,
+  versions {analyses, assessments}), `GET /views/accounts/{id}/overview`, `GET /views/comparison-scenarios/{id}`,
+  `GET /portfolio/queue`.
+- **Exports:** `GET /exports/analyses/{id}.csv?assessment=`, `GET /exports/analyses/{id}/report?assessment=`,
+  `GET /exports/comparison-runs/{id}.csv`, `GET /exports/comparison-runs/{id}/report`, reference-case fixture JSON.
+  CSV = single RFC 4180 table with columns `section, key, label, status, billed, expected, difference, pct,
+  flagged, check_scope, coverage, evidence_refs, value` (`section ∈ meta|row|total|bridge|finding|assumption`);
+  numbers are exact canonical strings; meta row `display_rounding=none`.
+- `make openapi` writes `frontend/src/api/openapi.json` (deterministic) and regenerates `schema.d.ts`;
+  `make openapi-check` (temp-dir compare) is part of `make check` from S24b on.
+- Single-process serving (S33): after API routers, `GET /{path:path}` serves files from the SPA dist or
+  `index.html`; `api/` paths keep the JSON 404 envelope.
 
 ---
 
 ## 9. Frontend structure
 
 Routes: `/` Portfolio queue · `/facilities`, `/facilities/:id` · `/accounts/:id` · `/roster/import` ·
-`/documents`, `/documents/:id` · `/invoices/:id` (intake/confirm/correct) · `/tariffs`, `/tariffs/:scheduleId`,
-`/tariff-versions/:id` · `/analyses/:id` (main review screen) · `/findings`, `/findings/:id` ·
+`/research-candidates` · `/documents`, `/documents/:id` · `/invoices/:id` · `/tariffs`, `/tariffs/:scheduleId`,
+`/tariff-versions/:id` · `/packages/:id` · `/analyses/:id` (review screen) · `/findings`, `/findings/:id` ·
 `/comparisons`, `/comparisons/:id` · `/reference-cases` · `/settings`.
 
-The **review screen** must answer PRD §5's five questions in visible regions: *What am I reviewing?* (header),
-*How complete is this?* (coverage panel), *What should we pay?* (totals + balance bridge), *Why is it
-different?* (component table + evidence drawer with rule, exact passage, calculation trace, invoice line
-source), *What happens next?* (input requests, decision, findings, export).
-
-Shared components: `Money` (exact string input; displays rounded with tooltip of exact value + "rounded
-display" label), `Variance` (signed diff, pct, flag icon), `CoverageBadge`, `ProvenanceTag`, `StatusPill`,
-`SourcePassage`, `SyntheticBadge`, `VersionBanner`. The frontend never does financial arithmetic; it displays
-server-computed values.
+- `src/api/client.ts`: `createApiClient({ baseUrl = window.location.origin, fetch })` provided via `ApiProvider`;
+  uploads via FormData `bodySerializer`; downloads via plain links.
+- Tests: `src/test/mockApi.ts` `mockApi({'GET /api/v1/meta': () => fixture, ...})` returns a fetch stub injected
+  through the provider (typed by `components['schemas']`); `renderWithProviders()` with `retry: false`.
+- `src/lib/decimal.ts`: `formatDecimal(str, places)` / `formatPercent(ratioStr, places)` using BigInt string
+  arithmetic, HALF_UP (`'1234.565'→'1,234.57'`, `'-0.005'→'-0.01'`). No `Number()`/`parseFloat` on amounts.
+- Shared components: `Money` (exact tooltip + "rounded display" label), `Variance` (signed diff, pct to 2 dp, flag,
+  "n/a (expected $0)"), `CoverageBadge`, `ProvenanceTag`, `StatusPill`, `SourcePassage`, `SyntheticBadge`,
+  `VersionBanner`, `CheckScopeNotice`. The frontend never performs financial arithmetic.
+- The review screen answers PRD §5's five questions in visible regions (header; coverage panel; totals + bridge;
+  component table + evidence drawer; next actions).
 
 ---
 
 ## 10. Testing conventions
 
-- Every behavior ships with tests in the same step. `make check` must pass before a step is committed.
-- Pytest marker `@pytest.mark.req("R06", "AT-THRESHOLD")` links tests to IDs in `docs/requirements.yaml`; S24
-  adds a meta-test that every ID is covered and generates `docs/TRACEABILITY.md`.
-- Engine: example tests + Hypothesis property tests (tier allocation conservation, determinism, threshold
-  symmetry, unit algebra laws).
-- App: service tests on a temp SQLite DB + temp data dir; API tests via `TestClient`; no network; AI client
-  injected and mocked.
-- Acceptance: one module per PRD §8 matrix row + additional reference cases, using synthetic fixtures with
-  hand-computed expected values documented inline.
-- Frontend: Vitest + Testing Library for components/screens with mocked API; Playwright E2E for the PRD §10.1
-  demo sequence on seeded synthetic data.
+- Every behavior ships with tests in the same step; `make check` green before commit; budget ≤ 180 s on 4 CPUs
+  (`pytest -n 4 --dist loadfile`); any test > 3 s uses the session template DB / seed template.
+- Traceability: `@pytest.mark.req("ID", ...)` (backend) and `// req: ID` comments (frontend/E2E) with IDs from
+  `docs/requirements.yaml`, each tagged with a `layer`. A conftest hook (from S10) rejects unknown IDs; the S24a
+  meta-test statically scans backend tests (AST) for backend-layer coverage; S33 extends it to frontend/E2E.
+- Expected values in tests and fixtures are **hand-derived** (comment or `derivation` text), never produced by
+  calling the code under test. Fixture derivations are re-checked by an independent tiny Decimal evaluator.
+- Hypothesis profile `default`: `deadline=None, max_examples=60, derandomize=True`; arithmetic-law properties use
+  bounded strategies (`tests/strategies.py`).
+- App tests use `tests/app/factories.py` builders (extended by each step, never duplicated) and a session-scoped
+  template SQLite DB (upgrade once, copy per test). AI clients are injected and mocked; no network.
 
 ---
 
-## 11. Configuration
+## 11. Fixture formats (binding for S07, S12, S14a, S20, S21, S23)
 
-`tariff_app.config.Settings` (pydantic-settings, prefix `TARIFF_`): `DATA_DIR` (default `backend/.data`),
-`DATABASE_URL` (default `sqlite:///<DATA_DIR>/tariff.sqlite3`), `AI_MODEL` (default `claude-opus-5-5`),
-`MAX_UPLOAD_MB` (default 25), `SERVE_FRONTEND_DIST` (path or empty). `ANTHROPIC_API_KEY` read from env.
+- `fixtures/synthetic/tariffs/<SCHEDULE>.json` = `{schedule: {code, name, kind, utility_legal_entity,
+  service_territory, status, is_private, is_synthetic: true, description}, document: {title, authority, pages:
+  [[line, ...], ...]} (latin-1), sources: [{ref_key, page_no, quote}], versions: [TariffVersionDef]}` — every
+  `ref_key` used in versions is declared; every quote occurs (whitespace-normalized) on its page.
+- `fixtures/synthetic/packages/<PKG>.json` = `{code, name, utility_legal_entity, service_territory, members:
+  [{schedule_code, role, precedence, member_from, member_to, overrides}]}`.
+- `fixtures/synthetic/reference_cases/<PKG>__<YYYY-MM>.json` = `{name, package_code, origin: synthetic_fixture,
+  held_out, allocation, context: CalcContext, expected: {component_key: decimal}, expected_scope: {coverage,
+  demand_determination}, derivation: {component_key: "<Decimal arithmetic expression>"}, reference_ids: [...]}`.
+- `fixtures/synthetic/roster_20.csv` columns: `facility_code, facility_name, service_address, state,
+  operating_status, utility_legal_name, account_number, meter_ids (;-separated), tariff_code, invoice_issuer,
+  billing_arrangement, notes` (one row per account).
+- `fixtures/synthetic/scenarios/fl_planned_2028.json` — six-candidate Florida scenario (shared + candidate-specific
+  monthly inputs, history, eligibility facts, commitments, unmodeled conditions).
+- `fixtures/synthetic/demo_manifest.json` (S23) — single source for seed, acceptance tests and E2E (entities by
+  code; named cases: `rate_error`, `revised_bill`, `duplicate_upload`, `negative_credit`, `missing_rider_factor`,
+  `billed_demand_only`, `cross_version`, `offsetting_lines`, `threshold_exact_1pct`, `threshold_above_1pct`).
+- The S14a importer renders `document` with the S13 generator, uploads it, creates source_refs (validated),
+  rewrites `ref_key`s to `src_` ids, creates DRAFT versions; approval is a separate call (seed/tests approve with
+  reason "SYNTHETIC fixture approval").
 
 ---
 
-## 12. Canonical commands (Makefile)
+## 12. Configuration
 
-`make setup` · `make check` (lint + typecheck + all unit tests, backend and frontend) · `make backend-test` ·
-`make frontend-test` · `make lint` · `make fmt` · `make dev` (API :8000 + Vite :5173) · `make seed`
-(synthetic demo workspace) · `make openapi` · `make e2e` · `make run` (single process serving built SPA).
+`tariff_app.config.Settings` (prefix `TARIFF_`): `DATA_DIR` (default `backend/.data`), `DATABASE_URL`
+(default `sqlite:///<DATA_DIR>/tariff.sqlite3`), `AI_MODEL` (default `claude-opus-5-5`), `MAX_UPLOAD_MB` (25),
+`SERVE_FRONTEND_DIST`. `ANTHROPIC_API_KEY` from env. The app lifespan runs `alembic upgrade head`.
+
+## 13. Canonical commands
+
+`make setup` · `make check` (lint + typecheck + unit tests; + `openapi-check` from S24b) · `make backend-test` ·
+`make frontend-test` · `make fmt` · `make dev` · `make seed` · `make openapi` · `make e2e` · `make run` ·
+`make traceability`.

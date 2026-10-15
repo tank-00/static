@@ -13,10 +13,13 @@ export UV_SYSTEM_CERTS=1
 unset UV_NATIVE_TLS || true
 
 # Backend: sync the locked environment (incl. optional AI extra and dev group).
-uv --directory backend sync --all-extras --quiet
+uv --directory backend sync --all-extras --locked --quiet
 
-# Frontend: npm install (not ci) so the container cache can reuse node_modules.
-npm --prefix frontend install --no-audit --no-fund --loglevel=error
+# Frontend: install from the lockfile only when node_modules is missing or older than package-lock.json
+# (npm ci never rewrites the lockfile, so no lockfile churn leaks into commits).
+if [ ! -d frontend/node_modules ] || [ frontend/package-lock.json -nt frontend/node_modules/.package-lock.json ]; then
+  npm --prefix frontend ci --no-audit --no-fund --loglevel=error
+fi
 
 # Persist uv TLS setting for the session.
 if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
