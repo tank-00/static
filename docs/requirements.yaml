@@ -21,6 +21,7 @@ R03-UNRESOLVED-BLOCKS: {layer: backend, text: "Unresolved terms block the affect
 R03-INVENTORY: {layer: backend, text: "Component inventory shows which elements the engine supports (R03)"}
 R03-ENTITY-TERRITORY-STATUS: {layer: backend, text: "Store legal utility entity, service territory and tariff status (R03)"}
 R03-RIDERS-AS-DEPENDENCIES: {layer: backend, text: "Linked riders and private amendments are individual dependencies (R03, §9.1)"}
+R03-FORMULA: {layer: backend, text: "Rule formulas parse through a safe whitelist with positioned errors and size/depth limits, and evaluate exactly and context-independently (R03, A§4.3)"}
 R04-APPROVAL: {layer: backend, text: "Michael approves rules and applicability with timestamp and reason before finalization (R04)"}
 R04-STALE: {layer: backend, text: "A source or rule edit marks affected drafts stale; affected analyses identified for explicit rerun (R04, §7)"}
 R04-REPRODUCIBLE: {layer: backend, text: "Completed analyses remain reproducible and unchanged (R04)"}

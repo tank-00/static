@@ -211,6 +211,7 @@ def test_the_scan_covers_every_engine_module() -> None:
         "tariff_engine.dates",
         "tariff_engine.decimals",
         "tariff_engine.errors",
+        "tariff_engine.expressions",
         "tariff_engine.units",
     } <= scanned
 

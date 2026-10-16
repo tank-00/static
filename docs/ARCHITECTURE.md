@@ -84,7 +84,8 @@ by name, e.g. `from ast import literal_eval`); and `json.load`/`json.loads` with
 numbers would become floats; `from json import load(s)` is rejected so the check applies). The scan is static and
 best-effort: int true division (`1 / 2` is a float) and floats produced at runtime by allowlisted code are
 review concerns it cannot see, so engine `/` operands must be Decimals or Quantities. Engine errors derive from
-`tariff_engine.errors.EngineError` (`CalcError`, `UnitError`, `DateError`).
+`tariff_engine.errors.EngineError` (`CalcError`, `UnitError`, `DateError`, `ExpressionError`,
+`MissingInputError`).
 
 ---
 
@@ -224,7 +225,7 @@ mapping symbol→exponent; dimensionless is `Unit({})`.
   the label of their (winning) operand, so `−(6.912 cents/kWh)` displays in cents; a zero literal adopting a unit
   gets `str(unit)`), `label_value` (value re-expressed in `label` units, e.g.
   `6.912` for `cents/kWh`), `is_zero_literal`. The polymorphic zero is `Quantity.zero_literal()` (S02 builds it
-  for a literal `0`); it stays polymorphic only through unary `-`, `abs` and `+ − min max` with other zero
+  for every zero-valued literal: `0`, `0.00`); it stays polymorphic only through unary `-`, `abs` and `+ − min max` with other zero
   literals — a computed zero (`x − x`, `0 * x`) has a definite unit, and rounding a zero literal
   (`Quantity.quantize`, S02 `round_to`) yields a plain dimensionless zero. Unit-checked operations: `+ −`,
   `qmin/qmax(...)` (ties keep the first operand), `< <= > >=` and `compare(a, b) → −1/0/1` (expression `==`/`!=`
@@ -249,6 +250,67 @@ Safe formulas parsed with `ast.parse(mode="eval")` and a strict node whitelist. 
 - API: `parse_expression(src) -> Expr` (raises `ExpressionError` with position), `referenced_names(expr)`
   (excludes functions/built-ins), `evaluate(expr, env) -> Quantity | bool`. Missing input → `MissingInputError
   (name)`. Limits: source ≤ 2,000 chars, AST depth ≤ 50.
+- API detail (S02): `parse_expression` returns a frozen, text-cached `Expr{source, body: Node}`. Nodes are frozen
+  dataclasses, each with a `Span{start, end, line, column}`: `Constant{value: Quantity, text}` (a signed number
+  literal or a whole `q(...)`), `Name{id}`, `Unary{- | not}`, `Binary{+ - * /}`, `BoolOp{and | or, operands}`,
+  `Compare{left, ops, comparators}`, `Conditional{condition, if_true, if_false}`, `Call{function, args}`,
+  `RoundTo{operand, places, mode}`, `InMonths{months}`; `children`/`walk` traverse pre-order in source order
+  (`x if c else y` visits `x`, `c`, `y`, although evaluation starts at `c`).
+  `referenced_names` returns a sorted, distinct tuple. `evaluate_traced(expr, env) -> Evaluation{value,
+  substitutions (name + value, first-use order), conversions (power_factor/apparent/as_reactive_equiv with
+  arguments, result, span)}`; `evaluate` returns its value. `env: Mapping[str, Quantity | bool | int |
+  MissingValue]` is built by the package resolver (S03/S04); an `int` is dimensionless (one outside the engine
+  range, §4.1, is a `CalcError`); any other type is a `TypeError`. A result may be the polymorphic zero (formula
+  `0`); callers place it in their unit. Parsing and evaluation never depend on the ambient decimal context: the
+  cached tree holds exact literals and all arithmetic runs in `engine_context` (§3.6, §4.1).
+- Built-ins (S02, `builtin_values(billing_month, billing_days)`): `billing_month` = month number 1–12 and
+  `period_year` = year of the utility billing month (§4.0); `billing_days` = resolved billing days [day];
+  `days_in_billing_month` = calendar days of the billing month [day]. Name resolution order (§4.6) puts them first.
+- Literals and arguments (S02): every zero-valued literal (`0`, `0.00`) is the polymorphic zero; a `-` written
+  directly before a number literal is part of it (`-1.5` is one `Constant`, negated exactly with `copy_negate`, so
+  a 37-digit `-1234…567` keeps every digit; `-0` stays the polymorphic zero, never `−0`), while `-q(...)` stays a
+  unary operation; hex/octal/binary/complex numbers, `True/False/None`, bytes, and text anywhere except `q`'s unit
+  or `round_to`'s mode are rejected, and that text must be one plain quoted literal (no `u`/`r` prefix, triple
+  quotes or implicit concatenation such as `"kW" "h"`, which would hide the effective unit or mode from the
+  reviewer). Literal-only arguments are validated at parse time: `q`'s amount is a (signed) number literal or a
+  quoted decimal (both exact) and its unit a text literal (`q(0, "kW")` is a zero **with** a unit, not
+  polymorphic); `round_to`'s places a whole-number literal in `−6144..6176` and its mode a `RoundingMode` name;
+  `in_months`
+  takes distinct whole-number literals 1–12. `min`/`max` take ≥ 2 arguments. `ceil`/`floor` = `round_to(x, 0,
+  CEILING/FLOOR)` on the canonical magnitude; `sqrt` halves even unit exponents (odd → `UnitError`, negative →
+  `CalcError`, 34-digit correctly rounded); `power_factor`/`apparent` with `p = q = 0` → `CalcError` for the
+  factor and `0` for the apparent power.
+- Text (S02): names are ASCII `[A-Za-z][A-Za-z0-9_]*` and must appear verbatim (Python's NFKC identifier
+  normalization would turn `ﬁx` into `fix`); `#` comments, backslashes, control characters other than tab and
+  newline, U+2028/U+2029 and lone surrogates are rejected anywhere. A lexical pre-scan that mirrors Python's
+  tokenizer runs before `ast.parse` and rejects a number glued to the next word (`1if x else 2`, which Python
+  accepts with only a `SyntaxWarning`) and f-strings (whose fields are code), so the parser never warns: the engine
+  prints nothing to stderr, and acceptance, message and position never depend on warning filters (`-W error`).
+  Leading whitespace is skipped but positions refer to the original text. Depth counts nested expression nodes
+  (a name or literal is 1; each operator, call or conditional adds 1, so a sum has at most 50 terms) and is checked
+  iteratively before any recursion; Python's own parser limits also surface as `ExpressionError`.
+- Kinds (S02): values are numbers (`Quantity`) or conditions (`bool`). Arithmetic, ordering and function
+  arguments need numbers; `and/or/not` and `if` conditions need conditions; `==`/`!=` compare two numbers (via
+  `Quantity.compare`) or two conditions. Evident mismatches fail at parse time, others when evaluated; both are
+  `ExpressionError` with the node's position. Unit and arithmetic failures stay `UnitError`/`CalcError`.
+- Missing values (S02, §3.2): a name absent from `env` or bound to `MissingValue` is *unknown*. Unknowns
+  propagate through arithmetic and functions; a conditional with an unknown condition is unknown (its branches
+  are not evaluated); `and`/`or` and comparison chains use three-valued logic, left to right with short-circuit
+  (a definite `False` decides `and`, a definite `True` decides `or`, a definite `False` pair decides a chain).
+  Errors follow the same left-to-right reading: an error (`CalcError`, `UnitError`, a kind `ExpressionError`) in an
+  operand met before any unknown one propagates, but one met after an unknown operand (or unknown pair) makes the
+  whole `and`/`or`/chain unknown with the names collected so far, and later operands are not consulted — that
+  operand is reached only if the missing inputs turn out non-decisive (`has_meter and kwh / kw > q(200, "h")` with
+  `has_meter` missing and `kw = 0` → `MissingInputError("has_meter")`, as for `… if has_meter else …`; a later
+  definite `False` does not decide, since with `has_meter` true evaluation would fail first). An unknown result
+  raises `MissingInputError(name, *more)`: `.name` is the first and `.names` every missing name the result depends
+  on, in evaluation order (so S04 can request them all at once).
+- Errors (S02): every `EngineError` has optional `offset` (0-based characters), `line` and `column` (1-based,
+  characters), set by `locate(...)`; `str()` appends `(line L, column C)` when set. `ExpressionError{message,
+  offset, line, column}` always has them; a `UnitError`/`CalcError` raised while evaluating gets the span of the
+  innermost node whose own operation failed (`a + b / c` with `c = 0` → offset 4), keeping its class so S04's
+  classification is unchanged. `ExpressionError` and `MissingInputError` live in `errors.py` and are re-exported by
+  `expressions.py`.
 
 ### 4.4 Determinant catalog (`catalog.py`, pure data)
 `CATALOG: dict[str, CatalogEntry{key, semantic_type, unit, series_capable, shared_compatible,
